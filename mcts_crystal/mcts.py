@@ -31,6 +31,29 @@ class MCTS:
         self.best_node: Optional[MCTSTreeNode] = None
         self.terminated = False
         self.epsilon = epsilon
+
+        # Track node with best E_form and its properties
+        self.best_e_form_node: Optional[MCTSTreeNode] = None
+        self.best_e_form_history = []
+        self.best_e_form_e_hull_history = []
+        self.best_e_form_formula_history = []
+
+        # Track node with best E_hull and its properties
+        self.best_e_hull_node: Optional[MCTSTreeNode] = None
+        self.best_e_hull_history = []
+        self.best_e_hull_e_form_history = []
+        self.best_e_hull_formula_history = []
+
+        # Track node with best rDOS and its properties
+        self.best_rdos_node: Optional[MCTSTreeNode] = None
+        self.best_rdos_history = []
+        self.best_rdos_eform_history = []
+        self.best_rdos_ehull_history = []
+        self.best_rdos_formula_history = []
+        self.best_rdos_value = 0.0  # Track best rDOS value seen so far
+
+        # Track number of unique compounds discovered
+        self.n_unique_compounds_history = []
         
     def select_node(self, mode: str = 'epsilon') -> List[MCTSTreeNode]:
         """
@@ -96,8 +119,8 @@ class MCTS:
             node.visit(renew_t_to_terminate)
             
     def expansion_simulation(self, rollout_depth: int = 1, n_rollout: int = 1,
-                           energy_calculator=None, rollout_method: str = 'both',
-                           alpha: float = 1.0, beta: float = 1.0, gamma: float = 0.0,
+                           energy_calculator=None, rollout_method: str = 'ehull',
+                           beta: float = 1.0, gamma: float = 2.5,
                            doscar_lookup=None) -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
@@ -106,10 +129,9 @@ class MCTS:
             rollout_depth: Depth of rollout simulation
             n_rollout: Number of rollout simulations
             energy_calculator: Energy calculator instance
-            rollout_method: Rollout evaluation method ('fe', 'eh', 'both', or 'weighted')
-            alpha: Weight for formation energy when using 'weighted' method (default: 1.0)
-            beta: Weight for energy above hull when using 'weighted' method (default: 1.0)
-            gamma: Weight for DOSCAR reward when using 'weighted' method (default: 0.0)
+            rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
+            beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
 
         Returns:
@@ -146,59 +168,41 @@ class MCTS:
         # Perform rollout simulations
         rewards = []
 
-        if rollout_method == 'fe':
-            # Formation energy only
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='fe'))
+        if rollout_method == 'ehull':
+            # E_hull only (tanh-transformed), no DFT/DOSCAR data required
+            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='ehull'))
             for _ in range(n_rollout - 1):
                 rollout_reward = new_node.rollout(
                     depth=rollout_depth,
                     energy_calculator=energy_calculator,
-                    mode='fe'
+                    mode='ehull'
                 )
                 rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
-        elif rollout_method == 'eh':
-            # Energy above hull only
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='eh'))
+        elif rollout_method == 'ehull_rdos':
+            # E_hull (tanh-transformed) + rDOS, requires doscar_rewards.csv
+            ehull_rdos_mode = f'ehull_rdos_{beta}_{gamma}'
+            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode=ehull_rdos_mode, doscar_lookup=doscar_lookup))
             for _ in range(n_rollout - 1):
                 rollout_reward = new_node.rollout(
                     depth=rollout_depth,
                     energy_calculator=energy_calculator,
-                    mode='eh'
-                )
-                rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
-        elif rollout_method == 'weighted':
-            # Weighted combination of formation energy, energy above hull, and DOSCAR reward
-            weighted_mode = f'weighted_{alpha}_{beta}_{gamma}'
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode=weighted_mode, doscar_lookup=doscar_lookup))
-            for _ in range(n_rollout - 1):
-                rollout_reward = new_node.rollout(
-                    depth=rollout_depth,
-                    energy_calculator=energy_calculator,
-                    mode=weighted_mode,
+                    mode=ehull_rdos_mode,
                     doscar_lookup=doscar_lookup
                 )
                 rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
-        elif rollout_method == 'dos':
-            # DOSCAR rewards only
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='dos', doscar_lookup=doscar_lookup))
+        elif rollout_method == 'rdos':
+            # rDOS only, requires doscar_rewards.csv, no MACE/Materials Project needed
+            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='rdos', doscar_lookup=doscar_lookup))
             for _ in range(n_rollout - 1):
                 rollout_reward = new_node.rollout(
                     depth=rollout_depth,
                     energy_calculator=energy_calculator,
-                    mode='dos',
+                    mode='rdos',
                     doscar_lookup=doscar_lookup
                 )
                 rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
-        else:  # rollout_method == 'both'
-            # Both formation energy and energy above hull (original behavior)
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='fe'))
-            for _ in range(n_rollout - 1):
-                rollout_reward = new_node.rollout(
-                    depth=rollout_depth,
-                    energy_calculator=energy_calculator,
-                    mode='eh'
-                )
-                rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
+        else:
+            raise ValueError(f"Unknown rollout_method: {rollout_method}")
             
         reward = np.max(rewards)
         extra = 0
@@ -268,8 +272,8 @@ class MCTS:
         
     def run(self, n_iterations: int, energy_calculator=None,
             rollout_depth: int = 1, n_rollout: int = 10,
-            selection_mode: str = 'epsilon', rollout_method: str = 'both',
-            alpha: float = 1.0, beta: float = 1.0, gamma: float = 0.0,
+            selection_mode: str = 'epsilon', rollout_method: str = 'ehull',
+            beta: float = 1.0, gamma: float = 2.5,
             doscar_lookup=None) -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
@@ -280,12 +284,13 @@ class MCTS:
             rollout_depth: Depth of rollout simulations
             n_rollout: Number of rollout simulations per expansion
             selection_mode: Node selection mode
-            rollout_method: Rollout evaluation method ('fe', 'eh', 'both', or 'weighted')
-            alpha: Weight for formation energy when using 'weighted' method (default: 1.0)
-            beta: Weight for energy above hull when using 'weighted' method (default: 1.0)
-            gamma: Weight for DOSCAR reward when using 'weighted' method (default: 0.0)
+            rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
+            beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
-                  Reward = alpha*(-e_form) + beta*(-e_above_hull) + gamma*(doscar_reward)
+                  'ehull':      reward = ehull_reward(e_above_hull)
+                  'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
+                  'rdos':       reward = r_DOS
 
         Returns:
             Dictionary containing run statistics
@@ -293,36 +298,99 @@ class MCTS:
         # Store doscar_lookup for statistics collection
         self.doscar_lookup = doscar_lookup
 
+        # Initialize tracking with root node (iteration 0)
+        self.best_e_form_node = self.root
+        self.best_e_hull_node = self.root
+        self.best_e_form_history.append(self.root.e_form)
+        self.best_e_form_e_hull_history.append(self.root.e_above_hull)
+        self.best_e_form_formula_history.append(self.root.get_chemical_formula())
+        self.best_e_hull_history.append(self.root.e_above_hull)
+        self.best_e_hull_e_form_history.append(self.root.e_form)
+        self.best_e_hull_formula_history.append(self.root.get_chemical_formula())
+
+        # Initialize rDOS tracking with root node
+        root_rdos = 0.0
+        if doscar_lookup is not None:
+            root_rdos = doscar_lookup.get_reward(self.root.get_chemical_formula())
+        self.best_rdos_node = self.root
+        self.best_rdos_value = root_rdos
+        self.best_rdos_history.append(root_rdos)
+        self.best_rdos_eform_history.append(self.root.e_form)
+        self.best_rdos_ehull_history.append(self.root.e_above_hull)
+        self.best_rdos_formula_history.append(self.root.get_chemical_formula())
+
+        self.n_unique_compounds_history.append(1)  # Start with root node only
+
         for i in range(n_iterations):
             if self.terminated:
                 break
-                
+
             # Selection
             select_chain = self.select_node(mode=selection_mode)
-            
+
             if self.terminated:
                 break
-                
+
             # Record statistics
             self.stat_node_visited()
-            
+
             # Expansion and simulation
             reward, renew_t_to_terminate = self.expansion_simulation(
                 rollout_depth=rollout_depth,
                 n_rollout=n_rollout,
                 energy_calculator=energy_calculator,
                 rollout_method=rollout_method,
-                alpha=alpha,
                 beta=beta,
                 gamma=gamma,
                 doscar_lookup=doscar_lookup
             )
-            
+
             # Back-propagation
             self.back_propagation(reward, select_chain, renew_t_to_terminate)
-            
+
             # Update statistics
             self.stat_node_visited()
+
+            # Track node with best (minimum) E_form
+            if self.best_e_form_node is None:
+                self.best_e_form_node = self.current_node
+            elif self.current_node.e_form < self.best_e_form_node.e_form:
+                self.best_e_form_node = self.current_node
+
+            # Track node with best (minimum) E_hull
+            if self.best_e_hull_node is None:
+                self.best_e_hull_node = self.current_node
+            elif self.current_node.e_above_hull < self.best_e_hull_node.e_above_hull:
+                self.best_e_hull_node = self.current_node
+
+            # Track node with best (maximum) rDOS
+            current_rdos = 0.0
+            if doscar_lookup is not None:
+                current_rdos = doscar_lookup.get_reward(self.current_node.get_chemical_formula())
+            if self.best_rdos_node is None:
+                self.best_rdos_node = self.current_node
+                self.best_rdos_value = current_rdos
+            elif current_rdos > self.best_rdos_value:
+                self.best_rdos_node = self.current_node
+                self.best_rdos_value = current_rdos
+
+            # Record convergence history for both compounds
+            self.best_e_form_history.append(self.best_e_form_node.e_form)
+            self.best_e_form_e_hull_history.append(self.best_e_form_node.e_above_hull)
+            self.best_e_form_formula_history.append(self.best_e_form_node.get_chemical_formula())
+
+            self.best_e_hull_history.append(self.best_e_hull_node.e_above_hull)
+            self.best_e_hull_e_form_history.append(self.best_e_hull_node.e_form)
+            self.best_e_hull_formula_history.append(self.best_e_hull_node.get_chemical_formula())
+
+            # Record rDOS convergence history
+            self.best_rdos_history.append(self.best_rdos_value)
+            self.best_rdos_eform_history.append(self.best_rdos_node.e_form)
+            self.best_rdos_ehull_history.append(self.best_rdos_node.e_above_hull)
+            self.best_rdos_formula_history.append(self.best_rdos_node.get_chemical_formula())
+
+            # Track number of unique compounds discovered
+            self.n_unique_compounds_history.append(len(self.stat_dict))
             
         # Final statistics
         results = {
@@ -346,16 +414,94 @@ class MCTS:
         """
         stat_df = pd.DataFrame(self.stat_dict).T
         if not stat_df.empty:
-            stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+            if stat_df.shape[1] == 6:
+                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+            else:
+                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
             stat_df = stat_df.sort_values(by='visit_count', ascending=False)
         return stat_df
         
     def save_statistics(self, filename: str):
         """
         Save statistics to CSV file.
-        
+
         Args:
             filename: Output filename
         """
         stat_df = self.get_statistics_dataframe()
         stat_df.to_csv(filename)
+
+    def save_convergence_history(self, filename: str):
+        """
+        Save convergence history (best E_form, E_hull, and rDOS per iteration) to CSV file.
+        Tracks three separate compounds at each iteration:
+        1. Compound with minimum E_form (and its E_hull)
+        2. Compound with minimum E_hull (and its E_form)
+        3. Compound with maximum rDOS (and its E_form, E_hull)
+
+        Args:
+            filename: Output filename
+        """
+        convergence_df = pd.DataFrame({
+            'iteration': list(range(len(self.best_e_form_history))),
+            'n_unique_compounds': self.n_unique_compounds_history,
+            'best_e_form': self.best_e_form_history,
+            'best_e_form_e_hull': self.best_e_form_e_hull_history,
+            'best_e_form_formula': self.best_e_form_formula_history,
+            'best_e_hull': self.best_e_hull_history,
+            'best_e_hull_e_form': self.best_e_hull_e_form_history,
+            'best_e_hull_formula': self.best_e_hull_formula_history,
+            'best_rdos': self.best_rdos_history,
+            'best_rdos_eform': self.best_rdos_eform_history,
+            'best_rdos_ehull': self.best_rdos_ehull_history,
+            'best_rdos_formula': self.best_rdos_formula_history
+        })
+
+        # Post-process: Update energies from stat_dict (which has the actual calculated values)
+        convergence_df = self._postprocess_convergence_energies(convergence_df)
+
+        convergence_df.to_csv(filename, index=False)
+        print(f"Saved convergence history to {filename}")
+
+    def _postprocess_convergence_energies(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Post-process convergence history to ensure all formulas have correct energies.
+        Looks up actual E_form and E_hull values from stat_dict.
+
+        Args:
+            df: Convergence history DataFrame
+
+        Returns:
+            Updated DataFrame with correct energies
+        """
+        if not self.stat_dict:
+            return df
+
+        # Create a copy to avoid modifying the original
+        df = df.copy()
+
+        # For each unique formula in the convergence history, look up its actual energies
+        for idx, row in df.iterrows():
+            # Update best_e_form compound energies
+            formula_eform = row['best_e_form_formula']
+            if formula_eform in self.stat_dict:
+                df.at[idx, 'best_e_form'] = self.stat_dict[formula_eform][4]  # e_form is at index 4
+                df.at[idx, 'best_e_form_e_hull'] = self.stat_dict[formula_eform][3]  # e_above_hull is at index 3
+
+            # Update best_e_hull compound energies
+            formula_ehull = row['best_e_hull_formula']
+            if formula_ehull in self.stat_dict:
+                df.at[idx, 'best_e_hull'] = self.stat_dict[formula_ehull][3]  # e_above_hull is at index 3
+                df.at[idx, 'best_e_hull_e_form'] = self.stat_dict[formula_ehull][4]  # e_form is at index 4
+
+            # Update best_rdos compound energies
+            formula_rdos = row['best_rdos_formula']
+            if formula_rdos in self.stat_dict:
+                df.at[idx, 'best_rdos_eform'] = self.stat_dict[formula_rdos][4]  # e_form is at index 4
+                df.at[idx, 'best_rdos_ehull'] = self.stat_dict[formula_rdos][3]  # e_above_hull is at index 3
+                # Update rDOS value if available (index 5 when 6 elements exist)
+                if len(self.stat_dict[formula_rdos]) >= 6:
+                    df.at[idx, 'best_rdos'] = self.stat_dict[formula_rdos][5]
+
+        return df

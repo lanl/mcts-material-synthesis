@@ -7,6 +7,26 @@ from typing import List, Optional, Tuple
 from ase import Atoms
 
 
+def ehull_reward(e_hull: float) -> float:
+    """
+    Sharp tanh-based reward for energy above hull.
+
+    Uses f(E_hull) = -tanh(300 * (E_hull - 0.05))
+
+    This gives a very sharp transition around 0.05 eV/atom:
+    - At E_hull = 0.05: reward = 0 (boundary)
+    - At E_hull = 0 (stable): reward ≈ +1 (favorable)
+    - At E_hull = 0.1 (unstable): reward ≈ -1 (unfavorable)
+
+    Args:
+        e_hull: Energy above hull value (eV/atom)
+
+    Returns:
+        Reward value in range [-1, +1]
+    """
+    return -np.tanh(300.0 * (e_hull - 0.05))
+
+
 class MCTSTreeNode:
     """
     MCTS tree node representing a crystal structure.
@@ -279,15 +299,18 @@ class MCTSTreeNode:
         
         self.expansion_list = expansion_list
         
-    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'fe', doscar_lookup=None) -> float:
+    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'ehull', doscar_lookup=None) -> float:
         """
         Perform rollout simulation from this node.
 
         Args:
             depth: Number of random substitutions to perform
-            energy_calculator: Energy calculator instance
-            mode: Evaluation mode ('fe', 'eh', 'both', or 'weighted_alpha_beta_gamma')
-            doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
+            energy_calculator: Energy calculator instance (required for 'ehull'/'ehull_rdos', unused for 'rdos')
+            mode: Evaluation mode. One of:
+                - 'ehull': reward = ehull_reward(e_above_hull) (MACE + Materials Project, no DFT/DOSCAR data needed)
+                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_rewards.csv)
+                - 'rdos': reward = r_DOS only, looked up from doscar_rewards.csv (no MACE/Materials Project needed)
+            doscar_lookup: DoscarRewardLookup instance for DOSCAR-derived rDOS rewards
 
         Returns:
             Reward value
@@ -325,54 +348,41 @@ class MCTSTreeNode:
             tmp_atoms = tmp_atoms.copy()
             tmp_atoms.set_atomic_numbers(tmp_atoms.get_atomic_numbers() + op_mat)
         
-        if mode == 'dos':
-            # DOSCAR rewards only - no energy calculator needed
+        if mode == 'rdos':
+            # rDOS only - looked up from the precomputed DOSCAR database, no MACE/MP needed
             if doscar_lookup is not None:
                 formula = tmp_atoms.get_chemical_formula(mode='metal')
-                doscar_reward = doscar_lookup.get_reward(formula)
-                return doscar_reward
+                return doscar_lookup.get_reward(formula)
             else:
                 return 0.0
 
         if energy_calculator is not None:
             e_form, e_above_hull = energy_calculator.calculate_energies(tmp_atoms)
 
+            # e_form is tracked for reference/reporting only; it is not part of the reward
             if depth == 0:
                 self.e_form = e_form
                 self.e_above_hull = e_above_hull
 
-            if mode == 'eh':
-                # return -(10 * e_above_hull - 0.5)
-                return -e_above_hull
-            elif mode == 'fe':
-                return -e_form
-            elif mode == 'both':
-                # Legacy mode: simple sum (biased toward formation energy due to magnitude)
-                return - e_form - e_above_hull
-            elif mode.startswith('weighted'):
-                # New weighted mode: mode='weighted_alpha_beta_gamma' where alpha, beta, gamma are the weights
-                # Extract alpha, beta, gamma from mode string (e.g., 'weighted_1.0_2.0_0.5')
+            if mode == 'ehull':
+                return ehull_reward(e_above_hull)
+            elif mode.startswith('ehull_rdos'):
+                # mode='ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
                 try:
                     parts = mode.split('_')
-                    alpha = float(parts[1])
+                    # parts = ['ehull', 'rdos', 'beta', 'gamma']
                     beta = float(parts[2])
                     gamma = float(parts[3]) if len(parts) > 3 else 0.0
                 except (IndexError, ValueError):
-                    alpha = 1.0  # Default to equal weighting
                     beta = 1.0
-                    gamma = 0.0
+                    gamma = 2.5
 
-                # Get DOSCAR reward if gamma > 0 and doscar_lookup is available
                 doscar_reward = 0.0
                 if gamma > 0 and doscar_lookup is not None:
                     formula = tmp_atoms.get_chemical_formula(mode='metal')
                     doscar_reward = doscar_lookup.get_reward(formula)
 
-                # Weighted combination: reward = alpha*(-e_form) + beta*(-e_above_hull) + gamma*(doscar_reward)
-                # Simplifies to: reward = -alpha*e_form - beta*e_above_hull + gamma*doscar_reward
-                # With typical values: e_form ~ -0.7, e_above_hull ~ 0.1, doscar_reward ~ 0.3
-                # alpha=1.0, beta=1.0, gamma=1.0 gives: -1.0*(-0.7) - 1.0*(0.1) + 1.0*(0.3) = 0.7 - 0.1 + 0.3 = 0.9
-                return -alpha * e_form - beta * e_above_hull + gamma * doscar_reward
+                return beta * ehull_reward(e_above_hull) + gamma * doscar_reward
             else:
                 raise ValueError(f"Unknown mode: {mode}")
         else:

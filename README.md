@@ -1,6 +1,6 @@
 # MCTS Materials
 
-A Monte Carlo Tree Search (MCTS) implementation for discovering and optimizing stable intermetallic crystal structures containing uranium and f-block elements by iteratively exploring chemical space guided by formation energies and thermodynamic stability metrics from MACE energy calculations.
+A Monte Carlo Tree Search (MCTS) implementation for discovering and optimizing stable intermetallic crystal structures containing uranium and f-block elements by iteratively exploring chemical space guided by thermodynamic stability (energy above hull) and electronic density-of-states (rDOS) metrics.
 
 ## Overview
 
@@ -8,16 +8,16 @@ This project applies MCTS, a reinforcement learning algorithm traditionally used
 
 1. **Selection**: Choosing promising compounds to explore using Upper Confidence Bound (UCB) criteria
 2. **Expansion**: Generating new candidate structures through element substitution
-3. **Simulation**: Evaluating structures using formation energy and energy above hull calculations
-4. **Backpropagation**: Updating the search tree based on discovered energies
+3. **Simulation**: Evaluating structures using a sharp tanh-transformed energy-above-hull reward and/or a DOSCAR-derived electronic structure reward (rDOS)
+4. **Backpropagation**: Updating the search tree based on discovered rewards
 
-The search focuses on intermetallic compounds with transition metals, Group IV elements (Si, Ge, Sn, Pb), and f-block elements (lanthanides and actinides), aiming to discover thermodynamically stable or metastable structures.
+The search focuses on intermetallic compounds with transition metals, Group IV elements (Si, Ge, Sn, Pb), and f-block elements (lanthanides and actinides), aiming to discover thermodynamically stable or metastable structures with favorable electronic structure near the Fermi level.
 
 ## Key Features
 
 - **Intelligent exploration** of chemical space using MCTS with UCB-based selection
-- **Multiple rollout methods** to balance formation energy and thermodynamic stability
-- **Flexible f-block substitution modes** (U-only, full f-block, or experimental)
+- **Three rollout methods** (`ehull`, `ehull_rdos`, `rdos`) for stability- and/or electronic-structure-guided search
+- **Flexible f-block substitution modes** (U-only, full f-block, experimental, lanthanides+U, or extended lanthanides+U)
 - **High-throughput energy calculations** using cached MACE results
 - **Comprehensive visualization** including tree structures, energy distributions, and iteration progress
 - **Automated analysis** with efficiency metrics and compound ranking
@@ -26,13 +26,13 @@ The search focuses on intermetallic compounds with transition metals, Group IV e
 
 ### Requirements
 
-```bash
-pip install ase pandas numpy matplotlib scipy
-```
+Python 3.9+. Set up a virtual environment and install pinned dependencies from `requirements.txt`:
 
-You'll also need:
-- Python 3.8+
-- Materials Project API key (required only for energy above hull calculations)
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
 ### Setup
 
@@ -42,32 +42,32 @@ git clone <repository-url>
 cd mcts_materials
 ```
 
-2. Ensure you have the high-throughput energy database:
-   - The code expects `high_throughput_mace_results.full.csv` in the working directory
-   - This file contains pre-computed MACE formation energies and energy above hull values
+2. Provide the high-throughput energy database (see [Data Availability](#data-availability) below):
+   - The code expects `high_throughput_mace_results.full.csv` in the repo root for all rollout methods
+   - `--rollout-method ehull_rdos` or `rdos` additionally require `doscar_rewards.csv` in the repo root
 
-3. Get a Materials Project API key (if using energy above hull):
-   - Register at https://materialsproject.org/
-   - Navigate to your dashboard and copy your API key
-   - **Note**: API key is only required for rollout methods: `eh`, `both`, or `weighted`
-   - Not needed for `rollout-method='fe'` (formation energy only)
+3. Set up your Materials Project API key locally (required for `ehull`/`ehull_rdos`, not required for `rdos`):
+   - Register at https://materialsproject.org/ and copy your API key from your dashboard
+   - Copy `config.example.json` to `config.json` and fill in `mp_api_key`. `config.json` is gitignored — it is read locally by `run_mcts.py` but never pushed to the repo.
+   - Alternatively, pass `--mp-api-key YOUR_KEY` on the command line each time (any CLI flag overrides `config.json`)
 
 ## Usage
 
 ### Basic Usage
 
-Run MCTS with default parameters:
+With `config.json` set up (see above):
+
+```bash
+python run_mcts.py
+```
+
+Without `config.json`, pass the key explicitly:
 
 ```bash
 python run_mcts.py --mp-api-key YOUR_API_KEY
 ```
 
-**Note**: The default rollout method is `weighted`, which requires an API key. If you don't have an API key, use `--rollout-method fe` instead (formation energy only).
-
-```bash
-# Without API key (formation energy only)
-python run_mcts.py --rollout-method fe
-```
+The default rollout method is `ehull`, which needs the Materials Project API key but no DOSCAR data. To run with no API key at all, use `--rollout-method rdos` (requires `doscar_rewards.csv`).
 
 This will:
 - Use the default starting structure (`examples/mat_Pb6U1W6_sg191.cif`)
@@ -79,45 +79,41 @@ This will:
 
 ```bash
 # Custom number of iterations
-python run_mcts.py --iterations 500 --mp-api-key YOUR_API_KEY
+python run_mcts.py --iterations 500
 
 # Custom starting structure
-python run_mcts.py --structure my_structure.cif --mp-api-key YOUR_API_KEY
+python run_mcts.py --structure my_structure.cif
 
-# Different rollout method (requires API key)
-python run_mcts.py --rollout-method eh --mp-api-key YOUR_API_KEY
+# E_hull + rDOS, with custom weighting (requires doscar_rewards.csv)
+python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5
+
+# rDOS only - no MACE/Materials Project needed (requires doscar_rewards.csv)
+python run_mcts.py --rollout-method rdos
 
 # Full f-block substitution mode
-python run_mcts.py --f-block-mode full_f_block --mp-api-key YOUR_API_KEY
-
-# Adjust energy above hull weighting
-python run_mcts.py --eh-weight 10.0 --mp-api-key YOUR_API_KEY
-
-# Higher exploration
-python run_mcts.py --exploration-constant 0.2 --mp-api-key YOUR_API_KEY
+python run_mcts.py --f-block-mode full_f_block
 
 # Custom output directory
-python run_mcts.py --output my_results --mp-api-key YOUR_API_KEY
+python run_mcts.py --output my_results
 ```
 
 ### Example Commands
 
 ```bash
-# Quick test run (formation energy only, no API key needed)
-python run_mcts.py --iterations 100 --rollout-method fe
+# E_hull only - MACE + Materials Project, no DFT/DOSCAR data needed
+python run_mcts.py --iterations 1000 --rollout-method ehull
 
-# Formation energy optimization only (no API key needed)
-python run_mcts.py --iterations 1000 --rollout-method fe
+# E_hull + rDOS (the published study's reward)
+python run_mcts.py --iterations 1000 --rollout-method ehull_rdos --beta 1.0 --gamma 2.5
 
-# Hull stability optimization only (requires API key)
-python run_mcts.py --iterations 1000 --rollout-method eh --mp-api-key YOUR_API_KEY
+# rDOS only
+python run_mcts.py --iterations 1000 --rollout-method rdos
 
-# Balanced optimization (default, requires API key)
-python run_mcts.py --iterations 1000 --rollout-method weighted --eh-weight 5.0 --mp-api-key YOUR_API_KEY
-
-# Full f-block exploration (requires API key)
-python run_mcts.py --iterations 1000 --f-block-mode full_f_block --rollout-method weighted --mp-api-key YOUR_API_KEY
+# Full f-block exploration
+python run_mcts.py --iterations 1000 --f-block-mode full_f_block --rollout-method ehull_rdos
 ```
+
+To reproduce the published U-only `ehull_rdos` study and its figures end to end, see [examples/ehull_rdos_u_only_study/](examples/ehull_rdos_u_only_study/run_study.sh).
 
 ## Hyperparameters
 
@@ -133,54 +129,49 @@ python run_mcts.py --iterations 1000 --f-block-mode full_f_block --rollout-metho
 
 | Parameter | Default | Options | Description |
 |-----------|---------|---------|-------------|
-| `--rollout-method` | `weighted` | `fe`, `eh`, `both`, `weighted` | Rollout evaluation method |
-| `--eh-weight` | 5.0 | float | Weight for energy above hull in weighted mode (higher = prioritize stability) |
-| `--mp-api-key` | None | string | Materials Project API key (required for `eh`, `both`, `weighted` methods) |
+| `--rollout-method` | `ehull` | `ehull`, `ehull_rdos`, `rdos` | Rollout evaluation method |
+| `--beta` | 1.0 | float | Weight for the E_hull reward in `ehull_rdos` |
+| `--gamma` | 2.5 | float | Weight for the rDOS reward in `ehull_rdos` |
+| `--mp-api-key` | None | string | Materials Project API key (required for `ehull`, `ehull_rdos`; prefer `config.json`) |
 | `--exploration-constant` | 0.1 | float | UCB exploration constant (higher = more exploration vs exploitation) |
-| `--f-block-mode` | `u_only` | `u_only`, `full_f_block`, `experimental` | F-block element substitution strategy |
+| `--f-block-mode` | `u_only` | `u_only`, `full_f_block`, `experimental`, `lanthanides_u`, `lanthanides_u_extended` | F-block element substitution strategy |
+| `--transition-metal` | None | element symbol | Override the transition metal in the starting structure |
+| `--group-iv` | None | element symbol | Override the Group IV element in the starting structure |
 | `--no-labels` | False | flag | Turn off labels in radial tree visualization |
 
 ### Rollout Method Details
 
-- **`fe` (Formation Energy)**: Optimizes for lowest formation energy only
-  - Best for finding thermodynamically stable compounds
-  - Reward = -e_form
-  - **No API key required**
+- **`ehull` (default)**: Sharp tanh-transformed energy above hull
+  - `ehull_reward(E_hull) = -tanh(300 * (E_hull - 0.05))` — a sharp transition around the 0.05 eV/atom stability threshold (≈+1 for stable compounds, ≈-1 for unstable ones)
+  - Reward = `ehull_reward(E_hull)`
+  - **Requires a Materials Project API key. Does not require DOSCAR/DFT data.**
 
-- **`eh` (Energy Above Hull)**: Optimizes for lowest energy above hull only
-  - Best for finding compounds stable against decomposition
-  - Reward = -e_above_hull
-  - **Requires Materials Project API key**
+- **`ehull_rdos`**: E_hull + electronic density-of-states reward, the formulation used in the published study
+  - Reward = `beta * ehull_reward(E_hull) + gamma * r_DOS`
+  - Default `beta=1.0`, `gamma=2.5`
+  - **Requires a Materials Project API key and `doscar_rewards.csv`.**
 
-- **`both`**: Simple mixture of both metrics
-  - Uses fe for first rollout, eh for subsequent rollouts
-  - Reward = -e_form - e_above_hull (unweighted)
-  - **Requires Materials Project API key**
+- **`rdos`**: DOSCAR-derived electronic structure reward only
+  - Reward = `r_DOS`, looked up directly from `doscar_rewards.csv`
+  - **Requires `doscar_rewards.csv`. Does not require MACE or a Materials Project API key.**
 
-- **`weighted` (Recommended)**: Tunable weighted combination
-  - Balances both metrics with adjustable weighting
-  - Reward = -e_form - α × e_above_hull (where α = eh_weight)
-  - Default α = 5.0 provides balanced optimization
-  - Increase α to prioritize hull stability
-  - Decrease α to prioritize formation energy
-  - **Requires Materials Project API key**
+Formation energy (`e_form`) is always computed and logged on every node and in every output CSV for reference, but it is not part of any of the three rewards above.
 
 ### Materials Project API Key
 
 The Materials Project API is used to calculate **energy above hull**, which measures thermodynamic stability against decomposition. This requires querying the Materials Project database for phase diagram information.
 
 **When is the API key required?**
-- Required for rollout methods: `eh`, `both`, `weighted`
-- Not required for: `fe` (formation energy only)
+- Required for rollout methods: `ehull`, `ehull_rdos`
+- Not required for: `rdos`
 
 **How to provide your API key:**
-```bash
-python run_mcts.py --mp-api-key YOUR_API_KEY --rollout-method weighted
-```
+- Preferred: copy `config.example.json` to `config.json` and set `mp_api_key` there (gitignored, read locally, never pushed)
+- Or: `python run_mcts.py --mp-api-key YOUR_API_KEY --rollout-method ehull_rdos`
 
 **What happens without an API key?**
-- If you try to use `eh`, `both`, or `weighted` without an API key, the script will exit with an error
-- Use `--rollout-method fe` to run without an API key
+- If you try to use `ehull` or `ehull_rdos` without an API key, the script will exit with an error
+- Use `--rollout-method rdos` to run without an API key (still requires `doscar_rewards.csv`)
 
 ### F-Block Substitution Modes
 
@@ -198,12 +189,31 @@ python run_mcts.py --mp-api-key YOUR_API_KEY --rollout-method weighted
   - Excludes La, includes Ce-Lu and U
   - Good balance of search space and practicality
 
-### Internal Parameters (Fixed)
+- **`lanthanides_u`**: All lanthanides (Ce-Lu) plus U, ±1 nearest-neighbor moves
 
-These are set in the code and optimized for typical use:
-- `rollout_depth`: 1 (depth of random substitutions during rollout)
-- `n_rollout`: 5 (number of rollout simulations per expansion)
-- `selection_mode`: 'epsilon' (ε-greedy with 20% random selection)
+- **`lanthanides_u_extended`**: All lanthanides (Ce-Lu) plus U, ±3 moves
+  - Faster exploration of heavy lanthanides (Tm, Yb, Lu) from any starting point
+
+### Internal Parameters (Fixed defaults, overridable on the CLI)
+
+- `--rollout-depth`: 1 (depth of random substitutions during rollout)
+- `--n-rollout`: 5 (number of rollout simulations per expansion)
+- `--epsilon`: 0.2 (ε-greedy selection rate)
+- `selection_mode`: `'epsilon'` (fixed)
+
+## Data Availability
+
+This repository ships **no proprietary DFT/DOSCAR data**. The high-throughput energy/DOS database underlying this work has not been publicly released yet, so the following files are gitignored and must be supplied locally — they are never committed or pushed:
+
+| File (repo root) | Required by | Schema |
+|---|---|---|
+| `high_throughput_mace_results.full.csv` | all rollout methods | CSV with columns `name` (chemical formula, e.g. `Ti6Si6Ce`), `e_form` (eV/atom), `e_above_hull` (eV/atom), `e_decomp` (eV/atom), `source` (free text) |
+| `doscar_rewards.csv` | `ehull_rdos`, `rdos` | CSV mapping chemical formula to a precomputed rDOS value (Gaussian-weighted sum of DOS peak intensity near the Fermi level — see `mcts_crystal/doscar_utils.py:DoscarRewardLookup`) |
+| `shunshun_mace_predictions_with_elements.csv` (repo root) | `examples/ehull_rdos_u_only_study/prepare_sg191_composite_data.py` only | CSV of all SG191 RM₆X₆ reference compounds with `Predicted_formation_energy (eV/atom)`, `energy_above_hull`, `Space_group` columns; used only to draw a comparison background scatter, not required to run MCTS itself |
+
+If you don't have these files, `run_mcts.py` will exit with a clear error naming the missing file rather than silently degrading. Once the underlying high-throughput study is released, these files will be published alongside it — check the paper / repo announcements for the data DOI.
+
+`high_throughput_mace_results.full.csv` also acts as a cache: any new compound MACE evaluates during a run is appended to it, so subsequent runs reuse prior calculations.
 
 ## Output Files
 
@@ -222,7 +232,9 @@ After running MCTS, the output directory contains:
 ### Data Files
 
 - **`all_compounds.csv`**: Complete list of all explored compounds with energies and statistics
+- **`convergence_history.csv`**: Best E_form/E_hull/rDOS compound found, per iteration
 - **`mcts_report.txt`**: Detailed text report with search efficiency metrics
+- **`mcts_object.pkl`**: Pickled `MCTS` object, for offline re-analysis/plotting (e.g. `create_composite_radial_tree.py`)
 
 ### Report Contents
 
@@ -236,7 +248,7 @@ The text report includes:
 
 ### Key Metrics
 
-- **Formation Energy (e_form)**: Energy per atom relative to elemental references
+- **Formation Energy (e_form)**: Energy per atom relative to elemental references (reference metric only - not part of the reward)
   - Negative values indicate exothermic formation (stable)
   - More negative = more stable
 
@@ -244,6 +256,9 @@ The text report includes:
   - Zero or negative = thermodynamically stable
   - 0-0.1 eV/atom = potentially synthesizable metastable phase
   - \>0.1 eV/atom = likely unstable against decomposition
+
+- **rDOS**: Gaussian-weighted sum of DOS peak height/intensity near the Fermi level
+  - Higher = sharper, more intense electronic structure features near E_F (a proxy for heavy-fermion/correlated-electron character)
 
 ### Interpreting Visualizations
 
@@ -263,49 +278,33 @@ The text report includes:
 ```
 mcts_materials/
 ├── run_mcts.py                    # Main runner script
+├── config.example.json            # Local config template (copy to config.json, gitignored)
+├── requirements.txt                # Pinned Python dependencies
+├── .gitignore                      # Excludes config.json, data files, caches, run outputs
 ├── mcts_crystal/                  # Core MCTS package
 │   ├── __init__.py
 │   ├── mcts.py                    # MCTS algorithm implementation
-│   ├── node.py                    # Tree node and substitution logic
-│   ├── energy_calculator.py       # Energy calculation interface
+│   ├── node.py                    # Tree node, substitution logic, reward functions
+│   ├── energy_calculator.py       # MACE + Materials Project energy interface
+│   ├── doscar_utils.py            # DOSCAR/rDOS reward lookup
 │   ├── visualization.py           # Plotting and visualization
 │   └── analysis.py                # Results analysis tools
-├── high_throughput_mace_results.full.csv  # Pre-computed energy database
-├── examples/                      # Example structures and data
-│   └── mat_Pb6U1W6_sg191.cif     # Default starting structure
-└── sensitivity_studies/           # Parameter sensitivity analysis scripts
-    ├── rollout_method_comparison.py
-    ├── eh_weight_sensitivity.py
-    ├── exploration_sensitivity.py
-    └── ...
+├── examples/
+│   ├── mat_Pb6U1W6_sg191.cif      # Default starting structure
+│   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures
+├── high_throughput_mace_results.full.csv  # NOT bundled - see Data Availability
+└── doscar_rewards.csv                      # NOT bundled - see Data Availability
 ```
 
-## Sensitivity Studies
+## Reproducing the Published Study
 
-The `sensitivity_studies/` directory contains scripts for analyzing the effect of various hyperparameters:
+`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 2.5`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
 
-- **`rollout_method_comparison.py`**: Compare fe, eh, both, and weighted methods
-- **`eh_weight_sensitivity.py`**: Test different eh_weight values (1.0 to 10.0)
-- **`exploration_sensitivity.py`**: Test exploration constants (0.05 to 0.5)
-- **`rollout_depth_sensitivity.py`**: Compare rollout depths (0 to 3)
-- **`selection_mode_sensitivity.py`**: Compare selection strategies
-- **`starting_material_sensitivity.py`**: Test different starting structures
+- `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
+- `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, SG191 comparison, convergence plot, composite-colored radial tree) from the run's output
+- Individual `prepare_*.py` / `plot_*.gnuplot` pairs for each figure, plus `generate_top10_report.py` for the ranked compound list
 
-These help understand optimal parameter settings for different materials discovery goals.
-
-**Note on API keys for sensitivity studies:**
-If a sensitivity study uses rollout methods that require energy above hull (`eh`, `both`, `weighted`), you must configure your Materials Project API key:
-
-1. Open the sensitivity study script
-2. Find the configuration section at the top: `MP_API_KEY = None`
-3. Replace with your key: `MP_API_KEY = "YOUR_API_KEY"`
-4. Run the script
-
-Example:
-```python
-# At the top of the sensitivity study file
-MP_API_KEY = "your_actual_key_here"  # Replace this
-```
+This requires `high_throughput_mace_results.full.csv` and `doscar_rewards.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
 
 ## Algorithm Details
 
@@ -322,8 +321,8 @@ MP_API_KEY = "your_actual_key_here"  # Replace this
 
 3. **Simulation Phase**: Perform rollout simulations:
    - Evaluate current node (depth=0)
-   - Perform random substitutions for additional rollouts (depth=1)
-   - Calculate reward based on rollout method
+   - Perform random substitutions for additional rollouts (depth>0)
+   - Calculate reward based on rollout method (`ehull`, `ehull_rdos`, or `rdos`)
 
 4. **Backpropagation Phase**: Update all nodes in selection chain:
    - Add reward to total_reward
@@ -334,20 +333,20 @@ MP_API_KEY = "your_actual_key_here"  # Replace this
 
 Search terminates when:
 - All iterations completed, OR
-- All leaf nodes marked as terminated (visited 30 times without improvement)
+- All leaf nodes marked as terminated (visited `--termination-limit` times without improvement, default 60)
 
 ## Tips for Effective Use
 
-1. **Get a Materials Project API key** if you want to use energy above hull optimization (`eh`, `both`, or `weighted` methods)
-   - Or use `--rollout-method fe` if you don't have an API key
-2. **Start with default parameters** to understand baseline behavior
-3. **Use weighted rollout method** (default) for balanced optimization when you have an API key
-4. **Increase eh_weight** (e.g., 10.0) if prioritizing thermodynamic stability
-5. **Increase iterations** (e.g., 2000-5000) for more thorough exploration
-6. **Use u_only mode** for focused uranium materials discovery
-7. **Use full_f_block mode** for broader lanthanide/actinide exploration
-8. **Check energy_above_hull values** - aim for < 0.1 eV/atom for synthesizability
-9. **Monitor iteration progress plots** to assess convergence
+1. **Get a Materials Project API key** for `ehull` or `ehull_rdos`, and put it in `config.json` (gitignored) rather than passing it on the command line repeatedly
+2. **Use `rdos`** if you don't have a Materials Project API key but do have `doscar_rewards.csv`
+3. **Start with default parameters** to understand baseline behavior
+4. **Use `ehull_rdos`** (the published study's method) for balanced stability + electronic-structure optimization
+5. **Increase `--gamma`** to prioritize electronic structure (rDOS) over hull stability, or `--beta` for the reverse
+6. **Increase iterations** (e.g., 2000-5000) for more thorough exploration
+7. **Use `u_only` mode** for focused uranium materials discovery
+8. **Use `lanthanides_u_extended` mode** for broader, faster lanthanide exploration
+9. **Check energy_above_hull values** - aim for < 0.1 eV/atom for synthesizability
+10. **Monitor iteration progress plots** to assess convergence
 
 ## Citation
 

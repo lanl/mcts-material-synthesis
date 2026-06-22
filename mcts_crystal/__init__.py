@@ -10,6 +10,7 @@ from .mcts import MCTS
 from .energy_calculator import MaceEnergyCalculator
 from .visualization import TreeVisualizer
 from .analysis import ResultsAnalyzer
+from .doscar_utils import DoscarRewardLookup
 
 __version__ = "0.1.0"
-__all__ = ["MCTSTreeNode", "MCTS", "MaceEnergyCalculator", "TreeVisualizer", "ResultsAnalyzer"]
+__all__ = ["MCTSTreeNode", "MCTS", "MaceEnergyCalculator", "TreeVisualizer", "ResultsAnalyzer", "DoscarRewardLookup"]
