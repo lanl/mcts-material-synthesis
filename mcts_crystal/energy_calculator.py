@@ -39,9 +39,25 @@ class MaceEnergyCalculator:
         # Load cached data if available
         if csv_file and Path(csv_file).exists():
             self.cache_df = pd.read_csv(csv_file)
+            # Add data_quality column if it doesn't exist (for backward compatibility)
+            if 'data_quality' not in self.cache_df.columns:
+                # Infer data quality from E_hull vs E_form comparison
+                # Missing MP data: E_hull = E_form (only elemental references used)
+                # Valid MP data: E_hull != E_form (competing phases found)
+                def infer_quality(row):
+                    # Check if E_hull equals E_form (within numerical precision)
+                    if abs(row['e_above_hull'] - row['e_form']) < 1e-9:
+                        return 'no_mp_data'  # Missing MP phase diagram data
+                    else:
+                        return 'valid'  # Has competing phase data
+                self.cache_df['data_quality'] = self.cache_df.apply(infer_quality, axis=1)
+
+                # Also fix any E_decomp errors: E_decomp should equal E_form - E_hull
+                self.cache_df['e_decomp'] = self.cache_df['e_form'] - self.cache_df['e_above_hull']
+                print(f"Added data_quality column and corrected E_decomp values")
             print(f"Loaded {len(self.cache_df)} cached calculations from {csv_file}")
         else:
-            self.cache_df = pd.DataFrame(columns=['name', 'e_form', 'e_above_hull', 'e_decomp'])
+            self.cache_df = pd.DataFrame(columns=['name', 'e_form', 'e_above_hull', 'e_decomp', 'data_quality'])
             
         # Initialize MACE calculator
         self._init_calculator()
@@ -62,31 +78,50 @@ class MaceEnergyCalculator:
     def _get_cached_result(self, formula: str) -> Optional[Tuple[float, float]]:
         """
         Get cached results for a chemical formula with flexible matching.
-        
+
         Args:
             formula: Chemical formula string
-            
+
         Returns:
             Tuple of (e_form, e_above_hull) if found, None otherwise
+            Note: If data_quality is 'no_mp_data' or 'error', e_above_hull is set to 10.0
         """
         if self.cache_df is None or self.cache_df.empty:
             return None
-            
+
         # Try exact match first
         matches = self.cache_df[self.cache_df['name'] == formula]
-        
+
         if not matches.empty:
             row = matches.iloc[0]
-            return float(row['e_form']), float(row['e_above_hull'])
-        
+            e_form = float(row['e_form'])
+            e_above_hull = float(row['e_above_hull'])
+
+            # Check data quality and apply penalty if needed
+            if 'data_quality' in row and row['data_quality'] in ['no_mp_data', 'error']:
+                print(f"      Cached compound {formula} has data_quality={row['data_quality']}")
+                print(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
+                e_above_hull = 10.0
+
+            return e_form, e_above_hull
+
         # Try flexible matching - normalize both formulas for comparison
         normalized_input = self._normalize_formula(formula)
-        
+
         for _, row in self.cache_df.iterrows():
             cached_formula = str(row['name'])
             if self._normalize_formula(cached_formula) == normalized_input:
-                return float(row['e_form']), float(row['e_above_hull'])
-            
+                e_form = float(row['e_form'])
+                e_above_hull = float(row['e_above_hull'])
+
+                # Check data quality and apply penalty if needed
+                if 'data_quality' in row and row['data_quality'] in ['no_mp_data', 'error']:
+                    print(f"   ⚠️  Cached compound {cached_formula} has data_quality={row['data_quality']}")
+                    print(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
+                    e_above_hull = 10.0
+
+                return e_form, e_above_hull
+
         return None
         
     def _normalize_formula(self, formula: str) -> str:
@@ -129,42 +164,45 @@ class MaceEnergyCalculator:
             # Fallback to original formula if normalization fails
             return formula
         
-    def _cache_result(self, formula: str, e_form: float, e_above_hull: float, e_decomp: float = 0.0):
+    def _cache_result(self, formula: str, e_form: float, e_above_hull: float, e_decomp: float = 0.0, data_quality: str = 'valid'):
         """
         Cache calculation result.
-        
+
         Args:
             formula: Chemical formula
             e_form: Formation energy
             e_above_hull: Energy above hull
             e_decomp: Decomposition energy
+            data_quality: Data quality flag ('valid', 'no_mp_data', 'no_api_key', 'error')
         """
         new_row = pd.DataFrame([{
             'name': formula,
             'e_form': e_form,
             'e_above_hull': e_above_hull,
-            'e_decomp': e_decomp
+            'e_decomp': e_decomp,
+            'data_quality': data_quality
         }])
-        
+
         self.cache_df = pd.concat([self.cache_df, new_row], ignore_index=True)
-        
+
         # Save to file if specified
         if self.csv_file:
             self.cache_df.to_csv(self.csv_file, index=False)
             
-    def _get_decomposition_energy(self, atoms: Atoms) -> float:
+    def _get_decomposition_energy(self, atoms: Atoms) -> Tuple[float, str]:
         """
         Calculate decomposition energy using Materials Project phase diagram.
-        
+
         Args:
             atoms: ASE Atoms object
-            
+
         Returns:
-            Decomposition energy (formation energy of decomposition products)
+            Tuple of (decomposition energy, data_quality flag)
+            data_quality can be: 'valid', 'no_mp_data', 'no_api_key', 'error'
         """
         if not self.mp_api_key:
             print(f"   No MP API key provided - using e_decomp = 0.0")
-            return 0.0
+            return 0.0, 'no_api_key'
             
         chemical_formula = atoms.get_chemical_formula()
         element_set = set(atoms.get_chemical_symbols())
@@ -185,24 +223,25 @@ class MaceEnergyCalculator:
                     entries = mpr.get_entries_in_chemsys(elements=element_set)
                 
             if not entries:
-                print(f"   Warning: No MP entries found for elements {element_set}")
-                return 0.0
-                
+                print(f"     Warning: No MP entries found for elements {element_set}")
+                print(f"      Compound {chemical_formula} will be flagged as missing MP data")
+                return 0.0, 'no_mp_data'
+
             print(f"   Found {len(entries)} MP entries for elements {element_set}")
-            
+
             # Create phase diagram
             pd_obj = PhaseDiagram(entries)
             comp = Composition(chemical_formula)
             decomp = pd_obj.get_decomposition(comp)
-            
+
             print(f"   Decomposition products: {len(decomp)} phases")
-            
+
             total_e_decomp = 0.0
             for entry, fraction in decomp.items():
                 try:
                     structure = entry.structure
                     decomp_atoms = AseAtomsAdaptor.get_atoms(structure, msonable=False)
-                    
+
                     # Use MACE to calculate energy of decomposition product
                     if self.calculator is None:
                         print(f"   Warning: No MACE calculator available, using entry energy")
@@ -213,27 +252,27 @@ class MaceEnergyCalculator:
                             energy=decomp_atoms.get_total_energy(),
                             composition=decomp_atoms.get_chemical_formula()
                         ))
-                    
+
                     total_e_decomp += e_form * fraction
                     print(f"     {entry.composition}: e_form={e_form:.4f} eV/atom (fraction={fraction:.4f})")
-                    
+
                 except Exception as phase_error:
                     print(f"   Warning: Error processing decomposition phase {entry.composition}: {phase_error}")
                     # Use the MP energy as fallback
                     e_form = entry.energy_per_atom
                     total_e_decomp += e_form * fraction
                     print(f"     {entry.composition}: using MP energy={e_form:.4f} eV/atom (fraction={fraction:.4f})")
-                
+
             print(f"   ✓ Calculated decomposition energy: {total_e_decomp:.4f} eV/atom")
-            return total_e_decomp
-            
+            return total_e_decomp, 'valid'
+
         except Exception as e:
-            print(f"   ❌ Error calculating decomposition energy for {chemical_formula}: {e}")
+            print(f"      Error calculating decomposition energy for {chemical_formula}: {e}")
             print(f"      This may be due to: network issues, MP API limits, or missing MP data")
-            print(f"      Returning 0.0 as fallback (this will make e_above_hull = e_form)")
+            print(f"      Compound will be flagged with low reward to avoid selection")
             import traceback
             print(f"      Full error: {traceback.format_exc()}")
-            return 0.0
+            return 0.0, 'error'
             
     def calculate_energies(self, atoms: Atoms) -> Tuple[float, float]:
         """
@@ -287,23 +326,32 @@ class MaceEnergyCalculator:
             ))
             
             # Calculate energy above hull
-            e_decomp = self._get_decomposition_energy(optimized_atoms)
-            e_above_hull = e_form - e_decomp
+            e_decomp, data_quality = self._get_decomposition_energy(optimized_atoms)
+
+            # Check data quality - if MP data is missing, penalize heavily
+            if data_quality in ['no_mp_data', 'error']:
+                # Set e_above_hull to a very large positive value (unstable)
+                e_above_hull = 10.0  # 10 eV/atom above hull = extremely unstable
+                print(f"      WARNING: Missing MP data for {formula}")
+                print(f"      Setting e_above_hull = {e_above_hull} eV/atom (flagged as unstable)")
+                print(f"      This compound will have very low reward and be avoided by MCTS")
+            else:
+                e_above_hull = e_form - e_decomp
 
             # Store e_decomp for later access
             self.last_e_decomp = e_decomp
 
-            # Cache the result for future use
-            self._cache_result(formula, e_form, e_above_hull, e_decomp)
-            print(f"   ✓ Cached new result: {formula} E_form={e_form:.4f} eV/atom")
+            # Cache the result for future use with data quality flag
+            self._cache_result(formula, e_form, e_above_hull, e_decomp, data_quality)
+            print(f"   ✓ Cached new result: {formula} E_form={e_form:.4f} eV/atom, data_quality={data_quality}")
 
             return e_form, e_above_hull
             
         except Exception as e:
             print(f"   Error calculating energies for {formula}: {e}")
-            # Cache zero values to avoid repeated failures
-            self._cache_result(formula, 0.0, 0.0, 0.0)
-            return 0.0, 0.0
+            # Cache with error flag to avoid repeated failures
+            self._cache_result(formula, 0.0, 10.0, 0.0, 'error')
+            return 0.0, 10.0
             
     def get_cached_dataframe(self) -> pd.DataFrame:
         """

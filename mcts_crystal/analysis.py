@@ -89,7 +89,11 @@ class ResultsAnalyzer:
             
         # Convert to DataFrame
         df = pd.DataFrame(stat_dict).T
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -109,18 +113,22 @@ class ResultsAnalyzer:
     def analyze_search_efficiency(self, stat_dict: Dict) -> Dict:
         """
         Analyze the efficiency of the MCTS search.
-        
+
         Args:
             stat_dict: Statistics dictionary from MCTS run
-            
+
         Returns:
             Dictionary with efficiency metrics
         """
         if not stat_dict:
             return {}
-            
+
         df = pd.DataFrame(stat_dict).T
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         
         # The e_form is now directly available in the stat_dict
         df['formation_energy'] = df['e_form']
@@ -148,18 +156,22 @@ class ResultsAnalyzer:
     def get_chemical_trends(self, stat_dict: Dict) -> Dict:
         """
         Analyze chemical trends in the discovered compounds.
-        
+
         Args:
             stat_dict: Statistics dictionary from MCTS run
-            
+
         Returns:
             Dictionary with chemical trend analysis
         """
         if not stat_dict:
             return {}
-            
+
         df = pd.DataFrame(stat_dict).T
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -295,7 +307,11 @@ class ResultsAnalyzer:
         """
         df = pd.DataFrame(stat_dict).T
         if not df.empty:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+            if df.shape[1] == 6:
+                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+            else:
+                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
             df = df.reset_index()
             df.columns = ['formula'] + list(df.columns[1:])
             

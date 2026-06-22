@@ -7,6 +7,26 @@ from typing import List, Optional, Tuple
 from ase import Atoms
 
 
+def ehull_reward(e_hull: float) -> float:
+    """
+    Sharp tanh-based reward for energy above hull.
+
+    Uses f(E_hull) = -tanh(300 * (E_hull - 0.05))
+
+    This gives a very sharp transition around 0.05 eV/atom:
+    - At E_hull = 0.05: reward = 0 (boundary)
+    - At E_hull = 0 (stable): reward ≈ +1 (favorable)
+    - At E_hull = 0.1 (unstable): reward ≈ -1 (unfavorable)
+
+    Args:
+        e_hull: Energy above hull value (eV/atom)
+
+    Returns:
+        Reward value in range [-1, +1]
+    """
+    return -np.tanh(300.0 * (e_hull - 0.05))
+
+
 class MCTSTreeNode:
     """
     MCTS tree node representing a crystal structure.
@@ -15,19 +35,21 @@ class MCTSTreeNode:
     in the MCTS tree structure.
     """
     
-    def __init__(self, atoms: Atoms, f_block_mode: str = 'u_only', exploration_constant: float = 0.1):
+    def __init__(self, atoms: Atoms, f_block_mode: str = 'u_only', exploration_constant: float = 0.1, termination_limit: int = 60):
         """
         Initialize an MCTS tree node.
-        
+
         Args:
             atoms: ASE Atoms object representing the crystal structure
             f_block_mode: F-block substitution mode ('u_only', 'full_f_block', or 'experimental')
             exploration_constant: Exploration constant for UCB calculation (default: 0.1)
+            termination_limit: Number of visits before terminating a node (default: 60)
         """
         self.atoms = atoms
         self.symbols = atoms.symbols
         self.f_block_mode = f_block_mode
         self.exploration_constant = exploration_constant
+        self.termination_limit = termination_limit
         self.parent: Optional['MCTSTreeNode'] = None
         self.children: List['MCTSTreeNode'] = []
         self.expandable = True
@@ -37,13 +59,13 @@ class MCTSTreeNode:
         self.e_form = 0.0
         self.e_above_hull = 0.0
         self.expansion_list: List['MCTSTreeNode'] = []
-        
+
         # MCTS statistics
         self.t_of_visit = 0
         self.total_reward = 0.0
         self.best_reward = -10.0
         self.terminated = False
-        self.t_to_terminate = 30
+        self.t_to_terminate = termination_limit
         
         # Initialize possible moves
         self._determine_possible_moves()
@@ -84,26 +106,21 @@ class MCTSTreeNode:
     def _determine_possible_moves(self):
         """
         Determine possible moves for transition metals, group IV elements, and f-block elements.
-        
+
         For transition metals: can move up, down, left, right on periodic table
-        For group IV elements: can move up and down within the group
-        For f-block elements: adjacent moves excluding elements 95-103
+        For group IV elements: ALL elements accessible (extended mode for better exploration)
+        For f-block elements: extended moves (±3) for better exploration
         """
         self.g_iv_move = [14, 32, 50, 82]  # Si, Ge, Sn, Pb
         self.f_block_move = []  # Will be set based on current f-block element
-        
+
         for atomic_num in set(self.atoms.get_atomic_numbers()):
             if atomic_num in self.g_iv_move:
                 self.g_iv = atomic_num
-                # Restrict moves based on current position
-                if atomic_num == 14:  # Si
-                    self.g_iv_move = [14, 32]
-                elif atomic_num == 32:  # Ge
-                    self.g_iv_move = [14, 32, 50]
-                elif atomic_num == 50:  # Sn
-                    self.g_iv_move = [32, 50, 82]
-                elif atomic_num == 82:  # Pb
-                    self.g_iv_move = [50, 82]
+                # EXTENDED MODE: Allow all Group IV elements to be reached
+                # This enables exploration of Si (highest DOS potential) from any starting point
+                # OLD: Pb→Sn→Ge→Si (3 moves), NEW: Pb→Si (1 move)
+                self.g_iv_move = [14, 32, 50, 82]  # All reachable
             elif 22 <= atomic_num <= 30:  # 3d transition metals
                 self.metal = atomic_num
                 if atomic_num == 22:  # Ti
@@ -135,34 +152,58 @@ class MCTSTreeNode:
     def _determine_f_block_moves(self, atomic_num: int):
         """
         Determine possible f-block element moves based on the f_block_mode.
-        
+
         Args:
             atomic_num: Current f-block atomic number
         """
         if self.f_block_mode == 'u_only':
             # U-only mode: restrict moves to only U (92)
             possible_moves = [92]  # Only U allowed
+        elif self.f_block_mode == 'lanthanides_u_extended':
+            # Extended Lanthanides + U mode: allows longer-range jumps
+            # This mode enables exploration of heavy lanthanides (Lu, Tm, Yb, etc.)
+            lanthanides = list(range(58, 72))  # Ce (58) to Lu (71)
+            allowed_elements = lanthanides + [92]
+
+            possible_moves = [atomic_num]
+
+            # Add extended-range moves (±1, ±2, ±3) for faster exploration
+            if atomic_num in lanthanides:
+                idx = lanthanides.index(atomic_num)
+                # Allow moves within ±3 positions with wrap-around
+                for delta in [-3, -2, -1, +1, +2, +3]:
+                    neighbor_idx = (idx + delta) % len(lanthanides)
+                    neighbor = lanthanides[neighbor_idx]
+                    possible_moves.append(neighbor)
+
+            # Allow transitions between lanthanides and U
+            if atomic_num == 92:
+                # From U, allow moves to Nd (60) and also to middle/heavy lanthanides
+                possible_moves.extend([60, 64, 68])  # Nd, Gd, Er (light, mid, heavy)
+            elif atomic_num in [60, 64, 68]:
+                # From key lanthanides, allow move back to U
+                possible_moves.append(92)
         elif self.f_block_mode == 'lanthanides_u':
             # Lanthanides + U mode: all lanthanides (Ce-Lu) plus Uranium
             lanthanides = list(range(58, 72))  # Ce (58) to Lu (71)
-            allowed_elements = lanthanides + [92]  # Add U (92)
+            allowed_elements = lanthanides + [92]
 
-            # Start with the current element
             possible_moves = [atomic_num]
 
-            # Add adjacent elements (±1) if they exist and are in our allowed set
-            for delta in [-1, +1]:
-                neighbor = atomic_num + delta
-                if neighbor in allowed_elements:
-                    possible_moves.append(neighbor)
+            # Add adjacent lanthanides with wrap-around behavior
+            if atomic_num in lanthanides:
+                idx = lanthanides.index(atomic_num)
+                left = lanthanides[(idx - 1) % len(lanthanides)]  # wraps Ce→Lu
+                right = lanthanides[(idx + 1) % len(lanthanides)] # wraps Lu→Ce
+                possible_moves.extend([left, right])
 
-            # Allow moves between lanthanides and U
+            # Allow transitions between lanthanides and U
             if atomic_num == 92:
-                # From U, allow moves to middle lanthanides (around Nd)
-                possible_moves.append(60)  # Nd
+                # From U, allow move to Nd (60)
+                possible_moves.append(60)
             elif atomic_num == 60:
-                # From Nd, allow moves to U
-                possible_moves.append(92)  # U
+                # From Nd, allow move to U
+                possible_moves.append(92)
         elif self.f_block_mode == 'experimental':
             # Experimental mode: actinides (minus La) plus U, allowing adjacent comparisons
             lanthanides_no_la = list(range(58, 72))  # Ce (90) to La (72)
@@ -231,6 +272,7 @@ class MCTSTreeNode:
                     new_node.symbols = new_atoms.symbols
                     new_node.f_block_mode = self.f_block_mode
                     new_node.exploration_constant = self.exploration_constant
+                    new_node.termination_limit = self.termination_limit
                     new_node.parent = None
                     new_node.children = []
                     new_node.expandable = True
@@ -244,7 +286,7 @@ class MCTSTreeNode:
                     new_node.total_reward = 0.0
                     new_node.best_reward = -10.0
                     new_node.terminated = False
-                    new_node.t_to_terminate = 30
+                    new_node.t_to_terminate = self.termination_limit
                     new_node._determine_possible_moves()
                     expansion_list.append(new_node)
         
@@ -257,15 +299,19 @@ class MCTSTreeNode:
         
         self.expansion_list = expansion_list
         
-    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'fe') -> float:
+    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'ehull', doscar_lookup=None) -> float:
         """
         Perform rollout simulation from this node.
-        
+
         Args:
             depth: Number of random substitutions to perform
-            energy_calculator: Energy calculator instance
-            mode: Evaluation mode ('fe' or 'eh' for energy above hull)
-            
+            energy_calculator: Energy calculator instance (required for 'ehull'/'ehull_rdos', unused for 'rdos')
+            mode: Evaluation mode. One of:
+                - 'ehull': reward = ehull_reward(e_above_hull) (MACE + Materials Project, no DFT/DOSCAR data needed)
+                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_rewards.csv)
+                - 'rdos': reward = r_DOS only, looked up from doscar_rewards.csv (no MACE/Materials Project needed)
+            doscar_lookup: DoscarRewardLookup instance for DOSCAR-derived rDOS rewards
+
         Returns:
             Reward value
         """
@@ -302,36 +348,41 @@ class MCTSTreeNode:
             tmp_atoms = tmp_atoms.copy()
             tmp_atoms.set_atomic_numbers(tmp_atoms.get_atomic_numbers() + op_mat)
         
+        if mode == 'rdos':
+            # rDOS only - looked up from the precomputed DOSCAR database, no MACE/MP needed
+            if doscar_lookup is not None:
+                formula = tmp_atoms.get_chemical_formula(mode='metal')
+                return doscar_lookup.get_reward(formula)
+            else:
+                return 0.0
+
         if energy_calculator is not None:
             e_form, e_above_hull = energy_calculator.calculate_energies(tmp_atoms)
-            
+
+            # e_form is tracked for reference/reporting only; it is not part of the reward
             if depth == 0:
                 self.e_form = e_form
                 self.e_above_hull = e_above_hull
-                
-            if mode == 'eh':
-                # return -(10 * e_above_hull - 0.5)
-                return -e_above_hull
-            elif mode == 'fe':
-                return -e_form
-            elif mode == 'both':
-                # Legacy mode: simple sum (biased toward formation energy due to magnitude)
-                return - e_form - e_above_hull
-            elif mode.startswith('weighted'):
-                # New weighted mode: mode='weighted_alpha_beta' where alpha and beta are the weights
-                # Extract alpha and beta from mode string (e.g., 'weighted_1.0_2.0')
+
+            if mode == 'ehull':
+                return ehull_reward(e_above_hull)
+            elif mode.startswith('ehull_rdos'):
+                # mode='ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
                 try:
                     parts = mode.split('_')
-                    alpha = float(parts[1])
+                    # parts = ['ehull', 'rdos', 'beta', 'gamma']
                     beta = float(parts[2])
+                    gamma = float(parts[3]) if len(parts) > 3 else 0.0
                 except (IndexError, ValueError):
-                    alpha = 1.0  # Default to equal weighting
                     beta = 1.0
-                # Weighted combination: reward = alpha*(-e_form) + beta*(-e_above_hull)
-                # Simplifies to: reward = -alpha*e_form - beta*e_above_hull
-                # With typical values: e_form ~ -0.7, e_above_hull ~ 0.1
-                # alpha=1.0, beta=1.0 gives: -1.0*(-0.7) - 1.0*(0.1) = 0.7 - 0.1 = 0.6
-                return -alpha * e_form - beta * e_above_hull
+                    gamma = 2.5
+
+                doscar_reward = 0.0
+                if gamma > 0 and doscar_lookup is not None:
+                    formula = tmp_atoms.get_chemical_formula(mode='metal')
+                    doscar_reward = doscar_lookup.get_reward(formula)
+
+                return beta * ehull_reward(e_above_hull) + gamma * doscar_reward
             else:
                 raise ValueError(f"Unknown mode: {mode}")
         else:
@@ -370,9 +421,9 @@ class MCTSTreeNode:
             renew_t_to_terminate: Whether to reset termination countdown
         """
         self.t_of_visit += 1
-        
+
         if renew_t_to_terminate:
-            self.t_to_terminate = 30
+            self.t_to_terminate = self.termination_limit
         else:
             self.t_to_terminate -= 1
             

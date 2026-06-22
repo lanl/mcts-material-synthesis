@@ -1,0 +1,7 @@
+{
+  "mp_api_key": "YOUR_MATERIALS_PROJECT_API_KEY",
+  "rollout_method": "ehull",
+  "iterations": 1000,
+  "beta": 1.0,
+  "gamma": 2.5
+}
