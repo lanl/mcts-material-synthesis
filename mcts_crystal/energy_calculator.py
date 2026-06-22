@@ -9,12 +9,11 @@ from pathlib import Path
 from ase import Atoms
 from ase.optimize import FIRE
 from ase.filters import ExpCellFilter
-from mace.calculators import mace_mp
-from matbench_discovery.energy import get_e_form_per_atom
-from pymatgen.core import Composition
-from pymatgen.io.ase import AseAtomsAdaptor
-from pymatgen.ext.matproj import MPRester
-from pymatgen.analysis.phase_diagram import PhaseDiagram
+
+# mace-torch, pymatgen, and matbench-discovery are only needed for live MACE/Materials
+# Project calls (install with `pip install -e .[full]`). They are imported lazily inside
+# the methods that use them so the rest of this package stays importable/testable without
+# them - cache-only lookups work fine either way.
 
 
 class MaceEnergyCalculator:
@@ -65,6 +64,7 @@ class MaceEnergyCalculator:
     def _init_calculator(self):
         """Initialize MACE-MP calculator."""
         try:
+            from mace.calculators import mace_mp
             self.calculator = mace_mp(
                 model="large", 
                 dispersion=False, 
@@ -208,8 +208,14 @@ class MaceEnergyCalculator:
         element_set = set(atoms.get_chemical_symbols())
         
         try:
+            from pymatgen.core import Composition
+            from pymatgen.io.ase import AseAtomsAdaptor
+            from pymatgen.ext.matproj import MPRester
+            from pymatgen.analysis.phase_diagram import PhaseDiagram
+            from matbench_discovery.energy import get_e_form_per_atom
+
             print(f"   Calculating decomposition energy for {chemical_formula} using MP API...")
-            
+
             with MPRester(self.mp_api_key) as mpr:
                 # Use the updated MP API method
                 try:
@@ -308,17 +314,19 @@ class MaceEnergyCalculator:
             return 0.0, 0.0
             
         try:
+            from matbench_discovery.energy import get_e_form_per_atom
+
             # Set calculator and optimize structure
             atoms_copy = atoms.copy()
             atoms_copy.calc = self.calculator
-            
+
             # Structural optimization with reasonable force threshold (0.05 eV/Å)
             atoms_filtered = ExpCellFilter(atoms_copy)
             optimizer = FIRE(atoms_filtered)
             optimizer.run(fmax=0.05)  # Much more reasonable force threshold
-            
+
             optimized_atoms = atoms_filtered.atoms
-            
+
             # Calculate formation energy
             e_form = get_e_form_per_atom(dict(
                 energy=optimized_atoms.get_total_energy(),
