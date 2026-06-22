@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Lightweight install only - no mace-torch/pymatgen/matbench-discovery.
+      # The test suite mocks MACE/Materials Project calls, so they aren't needed here.
+      - name: Install package (core + dev)
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -v

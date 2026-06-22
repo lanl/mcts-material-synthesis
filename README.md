@@ -26,12 +26,25 @@ The search focuses on intermetallic compounds with transition metals, Group IV e
 
 ### Requirements
 
-Python 3.9+. Set up a virtual environment and install pinned dependencies from `requirements.txt`:
+Python 3.9+. The package is installed via `pip` using `pyproject.toml`, in one of three sizes depending on what you need:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+
+pip install -e .            # core only: substitution/MCTS logic, doscar lookup, visualization, analysis
+pip install -e .[full]      # adds mace-torch, pymatgen, matbench-discovery - needed for live ehull/ehull_rdos runs
+pip install -e .[dev]       # adds pytest, for running the test suite
+```
+
+`pip install -r requirements.txt` is equivalent to `pip install -e .[full]` and still works if that's the habit you're in.
+
+The core install (no `[full]`) is intentionally lightweight: `rollout-method rdos` and the test suite don't need MACE, Materials Project, or pymatgen at all, so you can work on the search algorithm itself without installing the heavier ML/DFT stack.
+
+Once installed, you get a console command in addition to the script entry point:
+
+```bash
+mcts-run --rollout-method ehull_rdos --beta 1.0 --gamma 2.5   # equivalent to: python run_mcts.py --rollout-method ehull_rdos ...
 ```
 
 ### Setup
@@ -50,6 +63,15 @@ cd mcts_materials
    - Register at https://materialsproject.org/ and copy your API key from your dashboard
    - Copy `config.example.json` to `config.json` and fill in `mp_api_key`. `config.json` is gitignored — it is read locally by `run_mcts.py` but never pushed to the repo.
    - Alternatively, pass `--mp-api-key YOUR_KEY` on the command line each time (any CLI flag overrides `config.json`)
+
+### Running Tests
+
+```bash
+pip install -e .[dev]
+pytest
+```
+
+The test suite (`tests/`) covers the substitution rules, reward functions, MCTS selection/rollout logic, and CLI/config parsing using stub energy and DOSCAR calculators - it does not call MACE or the Materials Project API, so it runs without `[full]` installed and without any API key or local data files. CI (`.github/workflows/tests.yml`) runs it on every push/PR.
 
 ## Usage
 
@@ -277,18 +299,22 @@ The text report includes:
 
 ```
 mcts_materials/
-├── run_mcts.py                    # Main runner script
+├── run_mcts.py                    # Thin compatibility wrapper - delegates to mcts_crystal/cli.py
+├── pyproject.toml                  # Package metadata, dependencies/extras, mcts-run entry point
 ├── config.example.json            # Local config template (copy to config.json, gitignored)
-├── requirements.txt                # Pinned Python dependencies
+├── requirements.txt                # Equivalent to `pip install -e .[full]`
 ├── .gitignore                      # Excludes config.json, data files, caches, run outputs
 ├── mcts_crystal/                  # Core MCTS package
 │   ├── __init__.py
+│   ├── cli.py                     # run_mcts.py/mcts-run implementation (argument parsing, config loading)
 │   ├── mcts.py                    # MCTS algorithm implementation
 │   ├── node.py                    # Tree node, substitution logic, reward functions
-│   ├── energy_calculator.py       # MACE + Materials Project energy interface
+│   ├── energy_calculator.py       # MACE + Materials Project energy interface (lazy-imported, optional)
 │   ├── doscar_utils.py            # DOSCAR/rDOS reward lookup
 │   ├── visualization.py           # Plotting and visualization
 │   └── analysis.py                # Results analysis tools
+├── tests/                          # pytest suite (mocks MACE/Materials Project; no [full] install needed)
+├── .github/workflows/tests.yml     # CI: runs the test suite on push/PR
 ├── examples/
 │   ├── mat_Pb6U1W6_sg191.cif      # Default starting structure
 │   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures

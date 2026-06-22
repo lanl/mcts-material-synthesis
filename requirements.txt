@@ -1,9 +1,6 @@
-ase>=3.22
-numpy>=1.24
-pandas>=2.0
-matplotlib>=3.7
-networkx>=3.0
-scipy>=1.10
-mace-torch>=0.3
-matbench-discovery>=1.0
-pymatgen>=2024.1.1
+# Installs this package (editable) plus the heavy MACE/Materials Project/DFT
+# dependencies needed for live energy-above-hull calculations - the full
+# environment needed to reproduce the paper. See pyproject.toml for the
+# canonical dependency list and pip install -e . / -e .[dev] for lighter
+# installs that don't need mace-torch/pymatgen.
+-e .[full]
