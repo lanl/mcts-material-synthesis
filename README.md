@@ -29,12 +29,7 @@ The search focuses on intermetallic compounds with transition metals, Group IV e
 Python 3.9+. The package is installed via `pip` using `pyproject.toml`, in one of three sizes depending on what you need:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-
-pip install -e .            # core only: substitution/MCTS logic, doscar lookup, visualization, analysis
-pip install -e .[full]      # adds mace-torch, pymatgen, matbench-discovery - needed for live ehull/ehull_rdos runs
-pip install -e .[dev]       # adds pytest, for running the test suite
+pip install ase pandas numpy matplotlib scipy mace-torch matbench-discovery
 ```
 
 `pip install -r requirements.txt` is equivalent to `pip install -e .[full]` and still works if that's the habit you're in.
@@ -55,23 +50,11 @@ git clone <repository-url>
 cd mcts_materials
 ```
 
-2. Provide the high-throughput energy database (see [Data Availability](#data-availability) below):
-   - The code expects `high_throughput_mace_results.full.csv` in the repo root for all rollout methods
-   - `--rollout-method ehull_rdos` or `rdos` additionally require `doscar_rewards.csv` in the repo root
-
-3. Set up your Materials Project API key locally (required for `ehull`/`ehull_rdos`, not required for `rdos`):
-   - Register at https://materialsproject.org/ and copy your API key from your dashboard
-   - Copy `config.example.json` to `config.json` and fill in `mp_api_key`. `config.json` is gitignored — it is read locally by `run_mcts.py` but never pushed to the repo.
-   - Alternatively, pass `--mp-api-key YOUR_KEY` on the command line each time (any CLI flag overrides `config.json`)
-
-### Running Tests
-
-```bash
-pip install -e .[dev]
-pytest
-```
-
-The test suite (`tests/`) covers the substitution rules, reward functions, MCTS selection/rollout logic, and CLI/config parsing using stub energy and DOSCAR calculators - it does not call MACE or the Materials Project API, so it runs without `[full]` installed and without any API key or local data files. CI (`.github/workflows/tests.yml`) runs it on every push/PR.
+2. Get a Materials Project API key (if using energy above hull):
+   - Register at https://materialsproject.org/
+   - Navigate to your dashboard and copy your API key
+   - **Note**: API key is only required for rollout methods: `eh`, `both`, or `weighted`
+   - Not needed for `rollout-method='fe'` (formation energy only)
 
 ## Usage
 
@@ -96,28 +79,6 @@ This will:
 - Run 1000 iterations
 - Save results to `mcts_results/` directory
 - Generate visualizations and analysis reports
-
-### Custom Parameters
-
-```bash
-# Custom number of iterations
-python run_mcts.py --iterations 500
-
-# Custom starting structure
-python run_mcts.py --structure my_structure.cif
-
-# E_hull + rDOS, with custom weighting (requires doscar_rewards.csv)
-python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5
-
-# rDOS only - no MACE/Materials Project needed (requires doscar_rewards.csv)
-python run_mcts.py --rollout-method rdos
-
-# Full f-block substitution mode
-python run_mcts.py --f-block-mode full_f_block
-
-# Custom output directory
-python run_mcts.py --output my_results
-```
 
 ### Example Commands
 
