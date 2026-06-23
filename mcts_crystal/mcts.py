@@ -5,6 +5,7 @@ Monte Carlo Tree Search implementation for crystal structure optimization.
 import random
 import numpy as np
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional
 from .node import MCTSTreeNode
 
@@ -118,10 +119,78 @@ class MCTS:
             node.update_rewards(reward)
             node.visit(renew_t_to_terminate)
             
+    def _run_rollout_samples(self, new_node: MCTSTreeNode, rollout_depth: int,
+                              n_rollout: int, energy_calculator, mode: str,
+                              doscar_lookup, n_workers: int) -> List[float]:
+        """
+        Evaluate n_rollout independent rollout samples for new_node and return
+        their (scaled) rewards. The first sample always uses depth=0 (evaluates
+        new_node itself, no extra random substitution) and runs sequentially,
+        since it has the side effect of recording new_node.e_form/e_above_hull.
+        The remaining n_rollout - 1 samples are independent random walks of
+        rollout_depth steps; when n_workers > 1 they are evaluated concurrently
+        via a thread pool, each with its own deterministically-seeded RNG so
+        results stay reproducible under --seed regardless of thread scheduling.
+
+        Args:
+            new_node: Node to roll out from
+            rollout_depth: Depth of each additional rollout simulation
+            n_rollout: Total number of rollout samples (including the depth=0 one)
+            energy_calculator: Energy calculator instance
+            mode: Rollout mode string passed through to MCTSTreeNode.rollout()
+            doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
+            n_workers: Number of worker threads to use for the extra samples
+                (n_workers <= 1 runs them sequentially with the shared global
+                random state, identical to the pre-parallelism behavior)
+
+        Returns:
+            List of reward values, one per rollout sample
+        """
+        rewards = [new_node.rollout(depth=0, energy_calculator=energy_calculator,
+                                     mode=mode, doscar_lookup=doscar_lookup)]
+
+        n_extra = n_rollout - 1
+        if n_extra <= 0:
+            return rewards
+
+        scale = 1 - 0.1 * rollout_depth
+
+        if n_workers <= 1:
+            for _ in range(n_extra):
+                rollout_reward = new_node.rollout(
+                    depth=rollout_depth,
+                    energy_calculator=energy_calculator,
+                    mode=mode,
+                    doscar_lookup=doscar_lookup
+                )
+                rewards.append(scale * rollout_reward)
+            return rewards
+
+        # Draw per-task seeds up front (sequentially, from the shared global
+        # random state) so the set of substitutions tried is deterministic
+        # under --seed no matter how the thread pool schedules the tasks.
+        task_seeds = [random.randint(0, 2**31 - 1) for _ in range(n_extra)]
+
+        with ThreadPoolExecutor(max_workers=min(n_workers, n_extra)) as executor:
+            futures = [
+                executor.submit(
+                    new_node.rollout,
+                    depth=rollout_depth,
+                    energy_calculator=energy_calculator,
+                    mode=mode,
+                    doscar_lookup=doscar_lookup,
+                    rng=random.Random(seed)
+                )
+                for seed in task_seeds
+            ]
+            rewards.extend(scale * future.result() for future in futures)
+
+        return rewards
+
     def expansion_simulation(self, rollout_depth: int = 1, n_rollout: int = 1,
                            energy_calculator=None, rollout_method: str = 'ehull',
                            beta: float = 1.0, gamma: float = 2.5,
-                           doscar_lookup=None) -> Tuple[float, bool]:
+                           doscar_lookup=None, n_workers: int = 1) -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
 
@@ -133,6 +202,8 @@ class MCTS:
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
             gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
+            n_workers: Number of worker threads for the n_rollout samples
+                (default: 1, i.e. sequential, identical to prior behavior)
 
         Returns:
             Tuple of (reward, renew_t_to_terminate_flag)
@@ -166,43 +237,22 @@ class MCTS:
         self.current_node.update_expandable()
         
         # Perform rollout simulations
-        rewards = []
-
         if rollout_method == 'ehull':
             # E_hull only (tanh-transformed), no DFT/DOSCAR data required
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='ehull'))
-            for _ in range(n_rollout - 1):
-                rollout_reward = new_node.rollout(
-                    depth=rollout_depth,
-                    energy_calculator=energy_calculator,
-                    mode='ehull'
-                )
-                rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
+            mode = 'ehull'
         elif rollout_method == 'ehull_rdos':
             # E_hull (tanh-transformed) + rDOS, requires doscar_rewards.csv
-            ehull_rdos_mode = f'ehull_rdos_{beta}_{gamma}'
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode=ehull_rdos_mode, doscar_lookup=doscar_lookup))
-            for _ in range(n_rollout - 1):
-                rollout_reward = new_node.rollout(
-                    depth=rollout_depth,
-                    energy_calculator=energy_calculator,
-                    mode=ehull_rdos_mode,
-                    doscar_lookup=doscar_lookup
-                )
-                rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
+            mode = f'ehull_rdos_{beta}_{gamma}'
         elif rollout_method == 'rdos':
             # rDOS only, requires doscar_rewards.csv, no MACE/Materials Project needed
-            rewards.append(new_node.rollout(depth=0, energy_calculator=energy_calculator, mode='rdos', doscar_lookup=doscar_lookup))
-            for _ in range(n_rollout - 1):
-                rollout_reward = new_node.rollout(
-                    depth=rollout_depth,
-                    energy_calculator=energy_calculator,
-                    mode='rdos',
-                    doscar_lookup=doscar_lookup
-                )
-                rewards.append((1 - 0.1 * rollout_depth) * rollout_reward)
+            mode = 'rdos'
         else:
             raise ValueError(f"Unknown rollout_method: {rollout_method}")
+
+        rewards = self._run_rollout_samples(
+            new_node, rollout_depth, n_rollout, energy_calculator, mode,
+            doscar_lookup, n_workers
+        )
             
         reward = np.max(rewards)
         extra = 0
@@ -274,7 +324,7 @@ class MCTS:
             rollout_depth: int = 1, n_rollout: int = 10,
             selection_mode: str = 'epsilon', rollout_method: str = 'ehull',
             beta: float = 1.0, gamma: float = 2.5,
-            doscar_lookup=None) -> Dict:
+            doscar_lookup=None, n_workers: int = 1) -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
 
@@ -291,6 +341,15 @@ class MCTS:
                   'ehull':      reward = ehull_reward(e_above_hull)
                   'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
                   'rdos':       reward = r_DOS
+            n_workers: Number of worker threads to evaluate each expansion's
+                n_rollout samples concurrently (default: 1, i.e. sequential,
+                identical to prior behavior). For a given n_workers value,
+                repeated runs with the same --seed reproduce identical results
+                (each parallel sample draws from its own deterministically-
+                seeded RNG, independent of thread scheduling order). Note
+                results are NOT expected to match across different n_workers
+                values for the same seed, since the parallel and sequential
+                code paths consume the shared global RNG differently.
 
         Returns:
             Dictionary containing run statistics
@@ -342,7 +401,8 @@ class MCTS:
                 rollout_method=rollout_method,
                 beta=beta,
                 gamma=gamma,
-                doscar_lookup=doscar_lookup
+                doscar_lookup=doscar_lookup,
+                n_workers=n_workers
             )
 
             # Back-propagation
