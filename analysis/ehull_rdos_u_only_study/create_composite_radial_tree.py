@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 import networkx as nx
+import pandas as pd
 from pathlib import Path
 import re
 import sys
@@ -173,72 +174,114 @@ def main():
     pos = radial_layout(G, root_id, radius_step=3.0)
     pos = {nid: (-x, -y) for nid, (x, y) in pos.items()}
 
-    # Collect composite scores for coloring
+    # Collect values for coloring: composite, ehull_reward, r_dos
     composites = {}
+    ehull_rewards = {}
+    r_doss = {}
     for nid, info in tree_data.items():
-        if info["composite"] is not None:
+        if info.get("composite") is not None:
             composites[nid] = info["composite"]
+        # compute ehull_reward if e_hull present
+        if info.get("e_hull") is not None:
+            try:
+                eh = ehull_reward(info["e_hull"]) if info["e_hull"] is not None else np.nan
+            except Exception:
+                eh = np.nan
+            ehull_rewards[nid] = eh
+        # r_dos available
+        r_doss[nid] = info.get("r_dos", 0.0)
 
-    all_comp = [v for v in composites.values()]
-    if not all_comp:
+    # Prepare colormap helper
+    def make_cmap_and_norm(values, cmap_name='RdBu'):
+        arr = [v for v in values if v is not None and not pd.isna(v)]
+        if not arr:
+            return None, None
+        vmin = min(arr)
+        vmax = max(arr)
+        cmap = cm.get_cmap(cmap_name)
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+        return cmap, norm
+
+    # Create white->color colormaps for clear gradient visualization
+    def white_to_color_cmap(color):
+        return mcolors.LinearSegmentedColormap.from_list('wtc', ['white', color])
+
+    cmap_comp = white_to_color_cmap('#1f77b4')
+    arr_comp = [v for v in composites.values() if v is not None and not pd.isna(v)]
+    norm_comp = mcolors.Normalize(vmin=min(arr_comp), vmax=max(arr_comp))
+
+    cmap_ehull = white_to_color_cmap('#ff7f0e')
+    arr_eh = [v for v in ehull_rewards.values() if v is not None and not pd.isna(v)]
+    norm_ehull = mcolors.Normalize(vmin=min(arr_eh), vmax=max(arr_eh)) if arr_eh else None
+
+    cmap_rdos = white_to_color_cmap('#2ca02c')
+    arr_r = [v for v in r_doss.values() if v is not None and not pd.isna(v)]
+    norm_rdos = mcolors.Normalize(vmin=min(arr_r), vmax=max(arr_r)) if arr_r else None
+
+    if cmap_comp is None:
         print("No composite scores available")
         return 1
 
-    min_comp = min(all_comp)
-    max_comp = max(all_comp)
-    print(f"  Composite range: [{min_comp:.4f}, {max_comp:.4f}]")
+    # Prepare node colors for each metric
+    def node_colors_for(metric_dict, cmap, norm):
+        cols = []
+        for nid in G.nodes():
+            if nid in metric_dict and norm is not None:
+                cols.append(cmap(norm(metric_dict[nid])))
+            else:
+                cols.append('lightgray')
+        return cols
 
-    # Build blue-red colormap (blue=high/better, red=low/worse)
-    colors_red = ['darkred', 'red', 'lightcoral', 'white']   # low to mid
-    colors_blue = ['white', 'lightblue', 'blue', 'darkblue']  # mid to high
-    n_bins = 100
+    node_colors_comp = node_colors_for(composites, cmap_comp, norm_comp)
+    node_colors_ehull = node_colors_for(ehull_rewards, cmap_ehull, norm_ehull)
+    # Scale r_dos by 2.5 for coloring (visual weighting), do not change label text
+    rdos_scaled = {k: 2.5 * v for k, v in r_doss.items()}
+    # use white->green cmap for scaled rdos
+    cmap_rdos_scaled = cmap_rdos
+    norm_rdos_scaled = mcolors.Normalize(vmin=min(rdos_scaled.values()), vmax=max(rdos_scaled.values())) if rdos_scaled else None
+    node_colors_rdos = node_colors_for(rdos_scaled, cmap_rdos_scaled, norm_rdos_scaled)
 
-    if min_comp < 0 and max_comp > 0:
-        neg_range = abs(min_comp)
-        pos_range = abs(max_comp)
-        total = neg_range + pos_range
-        n_neg = max(1, int(n_bins * neg_range / total))
-        n_pos = max(1, n_bins - n_neg)
-        cmap_low = mcolors.LinearSegmentedColormap.from_list('red', colors_red, N=n_neg)
-        cmap_high = mcolors.LinearSegmentedColormap.from_list('blue', colors_blue, N=n_pos)
-        colors_arr = np.vstack((cmap_low(np.linspace(0, 1, n_neg)),
-                                cmap_high(np.linspace(0, 1, n_pos))))
-        cmap = mcolors.LinearSegmentedColormap.from_list('red_blue', colors_arr)
-    elif max_comp <= 0:
-        cmap = mcolors.LinearSegmentedColormap.from_list('red', colors_red, N=n_bins)
-    else:
-        cmap = mcolors.LinearSegmentedColormap.from_list('blue', colors_blue, N=n_bins)
+    # Set global font size to 10pt for consistent publication text
+    plt.rcParams.update({'font.size': 10})
 
-    norm = mcolors.Normalize(vmin=min_comp, vmax=max_comp)
+    # Create a wide figure: 6in wide x 2.75in tall with 3 panels
+    fig, axes = plt.subplots(1, 3, figsize=(6, 2.75), constrained_layout=True)
 
-    # Assign colors to nodes (root colored by its composite score like all others)
-    node_colors = []
-    for nid in G.nodes():
-        if nid in composites:
-            node_colors.append(cmap(norm(composites[nid])))
-        else:
-            node_colors.append('lightgray')
+    panels = [
+        (axes[0], node_colors_comp, cmap_comp, norm_comp, 'Composite Score'),
+        (axes[1], node_colors_ehull, cmap_ehull, norm_ehull, r"$r_{E_{\mathrm{Hull}}}$"),
+        (axes[2], node_colors_rdos, cmap_rdos_scaled, norm_rdos_scaled, r"$r_{\mathrm{DOS}}$")
+    ]
 
-    # Create figure — 3.25in x 3.25in, single panel with horizontal colorbar below
-    fig, ax_tree = plt.subplots(figsize=(3.25, 3.25))
+    labels_abc = ['(a)', '(b)', '(c)']
+    for i, (ax, ncols, cmap_m, norm_m, label) in enumerate(panels):
+        nx.draw(G, pos, ax=ax, with_labels=False,
+                node_color=ncols, edge_color='gray', node_size=120,
+                arrows=True, connectionstyle='arc3,rad=0.1',
+                edgecolors='black', linewidths=0.6)
+        # add panel letter in top-left
+        try:
+            abc = labels_abc[i]
+        except Exception:
+            abc = ''
+        ax.text(0.02, 0.98, abc, transform=ax.transAxes, va='top', ha='left', fontsize=10, weight='bold')
+        ax.axis('equal')
+        # colorbar for each panel; place metric label below the colorbar
+        sm = cm.ScalarMappable(norm=norm_m, cmap=cmap_m)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, orientation='horizontal', fraction=0.08, pad=0.08, aspect=20)
+        cbar.ax.tick_params(labelsize=10)
+        cbar.set_label(label, fontsize=10)
+        try:
+            cbar.ax.xaxis.set_label_position('bottom')
+            cbar.ax.xaxis.tick_bottom()
+        except Exception:
+            pass
 
-    # Radial tree
-    nx.draw(G, pos, ax=ax_tree, with_labels=False,
-            node_color=node_colors, edge_color='gray', node_size=120,
-            arrows=True, connectionstyle='arc3,rad=0.1',
-            edgecolors='black', linewidths=0.8)
-    ax_tree.axis('equal')
-
-    # Horizontal colorbar below the tree
-    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = plt.colorbar(sm, ax=ax_tree, orientation='horizontal',
-                        fraction=0.05, pad=0.02, aspect=30)
-    cbar.set_label('Composite Score', fontsize=8)
-    cbar.ax.tick_params(labelsize=7)
-
-    # Save
-    output_path = script_dir / 'radial_tree_composite.png'
+    # Ensure figures directory exists and save into it
+    figures_dir = script_dir / 'figures'
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    output_path = figures_dir / 'radial_tree_composite.png'
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Saved: {output_path}")

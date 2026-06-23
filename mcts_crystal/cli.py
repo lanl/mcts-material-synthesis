@@ -378,13 +378,7 @@ def main():
         # Create visualizations
         visualizer = TreeVisualizer()
 
-        # Radial tree visualization
-        visualizer.plot_radial_tree_visualization(
-            mcts,
-            output_dir=str(output_dir),
-            csv_file=str(csv_file),
-            show_labels=not args.no_labels
-        )
+        # Radial tree visualization generation disabled (use composite radial tree instead)
 
         # Skipping some auxiliary visualizations per publication configuration
         # (energy_distribution, iteration_progress, energy_above_hull_*, formation_energy_by_elements)
