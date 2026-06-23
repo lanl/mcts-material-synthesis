@@ -152,6 +152,8 @@ def main():
                        help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
     parser.add_argument('--n-rollout', type=int, default=5,
                        help='Number of rollout simulations per expansion (default: 5). Higher values increase computation per iteration.')
+    parser.add_argument('--n-workers', type=int, default=1,
+                       help='Number of worker threads to evaluate each expansion\'s rollout simulations concurrently (default: 1, i.e. sequential). Useful for ehull/ehull_rdos, where each rollout is an independent MACE relaxation + Materials Project call. For a fixed --n-workers value, --seed still reproduces identical results run-to-run (results will differ from a different --n-workers value at the same seed, since the RNG is consumed differently).')
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed for reproducibility (default: None)')
     parser.add_argument('--mp-api-key', type=str, default=None,
@@ -302,6 +304,7 @@ def main():
     print(f"   Rollout method: {args.rollout_method}")
     print(f"   Rollout depth: {args.rollout_depth}")
     print(f"   Number of rollouts: {args.n_rollout}")
+    print(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
         print(f"   Beta (E_hull weight, ehull_reward = -tanh(300*(E_hull-0.05))): {args.beta}")
         print(f"   Gamma (rDOS weight): {args.gamma}")
@@ -317,7 +320,8 @@ def main():
             rollout_method=args.rollout_method,
             beta=args.beta,
             gamma=args.gamma,
-            doscar_lookup=doscar_lookup
+            doscar_lookup=doscar_lookup,
+            n_workers=args.n_workers
         )
 
         print(f"   ✓ Completed: {results['iterations_completed']} iterations")

@@ -299,7 +299,7 @@ class MCTSTreeNode:
         
         self.expansion_list = expansion_list
         
-    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'ehull', doscar_lookup=None) -> float:
+    def rollout(self, depth: int = 1, energy_calculator=None, mode: str = 'ehull', doscar_lookup=None, rng=None) -> float:
         """
         Perform rollout simulation from this node.
 
@@ -311,23 +311,28 @@ class MCTSTreeNode:
                 - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_rewards.csv)
                 - 'rdos': reward = r_DOS only, looked up from doscar_rewards.csv (no MACE/Materials Project needed)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR-derived rDOS rewards
+            rng: Random source to draw substitutions from (anything exposing .choice(),
+                e.g. a random.Random instance). Defaults to the shared `random` module,
+                so behavior is unchanged unless a dedicated rng is passed in (used by
+                MCTS to give concurrent rollouts independent, reproducible streams).
 
         Returns:
             Reward value
         """
         import random
-        
+        rng = rng if rng is not None else random
+
         # Create initial temporary node
         tmp_atoms = self.atoms.copy()
         tmp_metal_move = self.metal_move.copy()
         tmp_g_iv_move = self.g_iv_move.copy()
         tmp_f_block_move = getattr(self, 'f_block_move', [None])
-        
+
         # Perform random substitutions
         for _ in range(depth):
-            metal = random.choice(tmp_metal_move)
-            g_iv = random.choice(tmp_g_iv_move)
-            f_block = random.choice(tmp_f_block_move) if tmp_f_block_move != [None] else None
+            metal = rng.choice(tmp_metal_move)
+            g_iv = rng.choice(tmp_g_iv_move)
+            f_block = rng.choice(tmp_f_block_move) if tmp_f_block_move != [None] else None
             
             # Create substituted atoms
             op_mat = []

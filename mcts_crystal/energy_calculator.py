@@ -2,6 +2,7 @@
 Energy calculator using MACE with CSV lookup for cached results.
 """
 
+import threading
 import pandas as pd
 import numpy as np
 from typing import Tuple, Optional
@@ -35,7 +36,17 @@ class MaceEnergyCalculator:
         self.cache_df = None
         self.calculator = None
         self.last_e_decomp = 0.0  # Store last calculated decomposition energy
-        
+
+        # A MACE calculator instance is stateful (results/atoms live on the
+        # calculator itself), so it can't be shared across threads safely.
+        # self.calculator is the eagerly-loaded instance used by the main
+        # thread; other threads lazily load and cache their own instance here.
+        self._thread_local = threading.local()
+        # Guards reads/writes of cache_df and the CSV file it's persisted to,
+        # so concurrent rollouts can't corrupt the shared cache.
+        self._cache_lock = threading.Lock()
+
+
         # Load cached data if available
         if csv_file and Path(csv_file).exists():
             self.cache_df = pd.read_csv(csv_file)
@@ -59,22 +70,41 @@ class MaceEnergyCalculator:
         else:
             self.cache_df = pd.DataFrame(columns=['name', 'e_form', 'e_above_hull', 'e_decomp', 'data_quality'])
             
-        # Initialize MACE calculator
-        self._init_calculator()
+        # Initialize MACE calculator (eagerly, on the main thread)
+        self.calculator = self._init_calculator()
         
     def _init_calculator(self):
-        """Initialize MACE-MP calculator."""
+        """Build a new MACE-MP calculator instance, or None if loading fails."""
         try:
-            self.calculator = mace_mp(
-                model="large", 
-                dispersion=False, 
-                default_dtype="float64", 
+            return mace_mp(
+                model="large",
+                dispersion=False,
+                default_dtype="float64",
                 device='cpu'
             )
         except Exception as e:
             print(f"Warning: Could not initialize MACE calculator: {e}")
-            self.calculator = None
-            
+            return None
+
+    def _get_calculator(self):
+        """
+        Get the MACE calculator instance to use on the current thread.
+
+        A MACE/ASE calculator stores its results on the instance itself, so
+        sharing one instance across threads would let concurrent rollouts
+        clobber each other's results. The main thread uses self.calculator
+        (loaded eagerly in __init__, unchanged from prior behavior); any other
+        thread (i.e. a rollout running in the thread pool) lazily loads and
+        reuses its own instance for the lifetime of that worker thread.
+        """
+        if threading.current_thread() is threading.main_thread():
+            return self.calculator
+
+        if not hasattr(self._thread_local, 'calculator'):
+            self._thread_local.calculator = self._init_calculator()
+        return self._thread_local.calculator
+
+
     def _get_cached_result(self, formula: str) -> Optional[Tuple[float, float]]:
         """
         Get cached results for a chemical formula with flexible matching.
@@ -183,11 +213,12 @@ class MaceEnergyCalculator:
             'data_quality': data_quality
         }])
 
-        self.cache_df = pd.concat([self.cache_df, new_row], ignore_index=True)
+        with self._cache_lock:
+            self.cache_df = pd.concat([self.cache_df, new_row], ignore_index=True)
 
-        # Save to file if specified
-        if self.csv_file:
-            self.cache_df.to_csv(self.csv_file, index=False)
+            # Save to file if specified
+            if self.csv_file:
+                self.cache_df.to_csv(self.csv_file, index=False)
             
     def _get_decomposition_energy(self, atoms: Atoms) -> Tuple[float, str]:
         """
@@ -243,11 +274,12 @@ class MaceEnergyCalculator:
                     decomp_atoms = AseAtomsAdaptor.get_atoms(structure, msonable=False)
 
                     # Use MACE to calculate energy of decomposition product
-                    if self.calculator is None:
+                    calculator = self._get_calculator()
+                    if calculator is None:
                         print(f"   Warning: No MACE calculator available, using entry energy")
                         e_form = entry.energy_per_atom
                     else:
-                        decomp_atoms.calc = self.calculator
+                        decomp_atoms.calc = calculator
                         e_form = get_e_form_per_atom(dict(
                             energy=decomp_atoms.get_total_energy(),
                             composition=decomp_atoms.get_chemical_formula()
@@ -289,28 +321,30 @@ class MaceEnergyCalculator:
             Tuple of (formation_energy, energy_above_hull)
         """
         formula = atoms.get_chemical_formula(mode='metal')
-        
+
         # ALWAYS check cache first
-        cached_result = self._get_cached_result(formula)
-        if cached_result is not None:
-            print(f"   Using cached result for {formula}")
-            # Also load e_decomp for cached results
-            cached_row = self.cache_df[self.cache_df['name'] == formula]
-            if not cached_row.empty and 'e_decomp' in cached_row.columns:
-                self.last_e_decomp = float(cached_row.iloc[0]['e_decomp'])
-            return cached_result
-            
+        with self._cache_lock:
+            cached_result = self._get_cached_result(formula)
+            if cached_result is not None:
+                print(f"   Using cached result for {formula}")
+                # Also load e_decomp for cached results
+                cached_row = self.cache_df[self.cache_df['name'] == formula]
+                if not cached_row.empty and 'e_decomp' in cached_row.columns:
+                    self.last_e_decomp = float(cached_row.iloc[0]['e_decomp'])
+                return cached_result
+
         # Only perform calculation if not in cache
         print(f"   Computing new MACE calculation for {formula} (not in cache)")
-        
-        if self.calculator is None:
+
+        calculator = self._get_calculator()
+        if calculator is None:
             print(f"   Warning: No calculator available, returning zero energies for {formula}")
             return 0.0, 0.0
-            
+
         try:
             # Set calculator and optimize structure
             atoms_copy = atoms.copy()
-            atoms_copy.calc = self.calculator
+            atoms_copy.calc = calculator
             
             # Structural optimization with reasonable force threshold (0.05 eV/Å)
             atoms_filtered = ExpCellFilter(atoms_copy)
