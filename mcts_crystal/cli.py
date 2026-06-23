@@ -206,11 +206,11 @@ def main():
     # Check if DOSCAR rewards file exists for methods that need rDOS
     if args.rollout_method in ['ehull_rdos', 'rdos']:
         doscar_file = Path("doscar_rewards.csv")
-        if not doscar_file.exists():
-            logger.error(f"DOSCAR rewards file (doscar_rewards.csv) not found for rollout method '{args.rollout_method}'")
-            logger.info(f"   This file is derived from local DFT/DOSCAR data and is not bundled with the repo")
-            logger.info(f"   pre-release. See the README's Data Availability section for the expected schema")
-            logger.info(f"   and how to generate it from your own DOSCAR data.")
+        peaks_file = Path("doscar_peaks_data_with_U.csv")
+        if not doscar_file.exists() and not peaks_file.exists():
+            logger.error(f"DOSCAR rewards file (doscar_rewards.csv) not found and no peaks file available for rollout method {args.rollout_method}")
+            logger.info(f"   Provide either doscar_rewards.csv (precomputed) or doscar_peaks_data_with_U.csv (raw peaks) in the repo root")
+            logger.info(f"   See the README's Data Availability section for the expected schema and how to generate these files.")
             return 1
 
     logger.info("=" * 80)

@@ -64,42 +64,54 @@ def compute_composite(e_hull, r_dos, beta=1.0, gamma=2.5):
 
 
 def count_descendants(G, node):
-    """Recursively count descendants including self."""
-    children = list(G.successors(node))
-    return 1 + sum(count_descendants(G, c) for c in children)
+    """Count descendants including self using NetworkX reachability to avoid recursion/cycles."""
+    try:
+        desc = nx.descendants(G, node)
+        return 1 + len(desc)
+    except Exception:
+        return 1
 
 
 def radial_layout(G, root, radius_step=3.0):
-    """Compute radial layout positions."""
+    """Compute a non-recursive radial layout positions based on BFS depth.
+
+    Places nodes at radius = depth * radius_step and evenly spaces nodes
+    at the same depth around the circle. This avoids recursion and handles
+    cycles by using shortest-path depths from the root.
+    """
     pos = {}
-    pos[root] = (0, 0)
+    if root is None or root not in G:
+        return pos
+    pos[root] = (0.0, 0.0)
 
-    def layout_children(node, depth, angle_start, angle_end):
-        children = list(G.successors(node))
-        if not children:
-            return
+    try:
+        depths = nx.single_source_shortest_path_length(G, root)
+    except Exception:
+        # Fallback: place all nodes in a circle if shortest paths fail
+        nodes = list(G.nodes())
+        n = len(nodes)
+        for i, nkey in enumerate(nodes):
+            theta = 2.0 * math.pi * (i / max(1, n))
+            pos[nkey] = (radius_step * math.cos(theta), radius_step * math.sin(theta))
+        return pos
 
-        total_desc = sum(count_descendants(G, c) for c in children)
-        if total_desc == 0:
-            total_desc = len(children)
+    # Group nodes by depth
+    depth_groups = {}
+    for nkey, d in depths.items():
+        depth_groups.setdefault(d, []).append(nkey)
 
-        angle_range = angle_end - angle_start
-        current_angle = angle_start
+    max_depth = max(depth_groups.keys()) if depth_groups else 0
 
-        for child in children:
-            child_desc = count_descendants(G, child)
-            child_angle = angle_range * child_desc / total_desc
+    for d in range(1, max_depth + 1):
+        nodes_at_depth = depth_groups.get(d, [])
+        m = len(nodes_at_depth)
+        for i, nkey in enumerate(nodes_at_depth):
+            theta = 2.0 * math.pi * (i / max(1, m))
+            r = d * radius_step
+            x = r * math.cos(theta)
+            y = r * math.sin(theta)
+            pos[nkey] = (x, y)
 
-            mid_angle = current_angle + child_angle / 2
-            r = depth * radius_step
-            x = r * math.cos(mid_angle)
-            y = r * math.sin(mid_angle)
-            pos[child] = (x, y)
-
-            layout_children(child, depth + 1, current_angle, current_angle + child_angle)
-            current_angle += child_angle
-
-    layout_children(root, 1, 0, 2 * math.pi)
     return pos
 
 
@@ -160,86 +172,157 @@ def main():
     tree_data = build_tree_data(mcts)
     print(f"  {len(tree_data)} nodes in tree")
 
-    # Build networkx graph
-    G = nx.DiGraph()
-    for node_id, info in tree_data.items():
-        G.add_node(node_id, formula=info["formula"], composite=info["composite"]) 
-        if info["parent_id"] is not None:
-            G.add_edge(info["parent_id"], node_id)
+    # Build a condensed networkx graph collapsing nodes by unique formula
+    # Aggregate composite (max), r_dos (max), and sum visit_counts for unique formulas.
+    unique_map = {}
+    edges = set()
+    root_formula = None
 
-    # Find root
-    root_id = next(nid for nid, info in tree_data.items() if info["parent_id"] is None)
+    for nid, info in tree_data.items():
+        formula = info.get('formula') or f'UNK_{nid}'
+        # normalize formula key as string
+        key = str(formula)
+        if key not in unique_map:
+            unique_map[key] = {
+                'formulas': [formula],
+                'composites': [],
+                'e_hulls': [],
+                'r_doss': [],
+                'visit_count': 0
+            }
+        if info.get('composite') is not None:
+            unique_map[key]['composites'].append(info['composite'])
+        if info.get('e_hull') is not None:
+            unique_map[key]['e_hulls'].append(info['e_hull'])
+        unique_map[key]['r_doss'].append(info.get('r_dos', 0.0))
+        unique_map[key]['visit_count'] += int(info.get('visit_count', 0) or 0)
+
+        parent = info.get('parent_id')
+        if parent is None:
+            root_formula = key
+        else:
+            parent_formula = tree_data.get(parent, {}).get('formula')
+            if parent_formula is None:
+                parent_key = f'UNK_{parent}'
+            else:
+                parent_key = str(parent_formula)
+            if parent_key != key:
+                edges.add((parent_key, key))
+
+    # Decide which unique nodes to keep (trim low-visit nodes for clarity)
+    all_nodes = list(unique_map.items())
+    # Keep nodes with at least 2 visits by default
+    nodes_keep = [k for k, v in unique_map.items() if v['visit_count'] >= 2]
+    # If too many nodes remain, keep top 60 by visit_count
+    if len(nodes_keep) > 60:
+        sorted_nodes = sorted(unique_map.items(), key=lambda kv: kv[1]['visit_count'], reverse=True)
+        nodes_keep = [k for k, _ in sorted_nodes[:60]]
+    # If too few nodes kept (e.g., most have 1 visit), instead keep top 40 by visit_count
+    if len(nodes_keep) < 10:
+        sorted_nodes = sorted(unique_map.items(), key=lambda kv: kv[1]['visit_count'], reverse=True)
+        nodes_keep = [k for k, _ in sorted_nodes[:40]]
+
+    nodes_keep_set = set(nodes_keep)
+
+    # Build networkx graph from filtered unique_map
+    G = nx.DiGraph()
+    for key in nodes_keep:
+        info = unique_map[key]
+        comp_vals = [v for v in info['composites'] if v is not None]
+        comp_agg = max(comp_vals) if comp_vals else None
+        rdos_vals = [float(v) for v in info['r_doss'] if v is not None]
+        rdos_agg = max(rdos_vals) if rdos_vals else 0.0
+        eh_vals = [v for v in info['e_hulls'] if v is not None]
+        eh_agg = eh_vals[0] if eh_vals else None
+        G.add_node(key, formula=key, composite=comp_agg, e_hull=eh_agg, r_dos=rdos_agg, visit_count=info['visit_count'])
+
+    for a, b in edges:
+        if a in nodes_keep_set and b in nodes_keep_set:
+            if a not in G:
+                G.add_node(a, formula=a, composite=None, e_hull=None, r_dos=0.0, visit_count=0)
+            if b not in G:
+                G.add_node(b, formula=b, composite=None, e_hull=None, r_dos=0.0, visit_count=0)
+            G.add_edge(a, b)
+
+    if root_formula is None or root_formula not in G:
+        # fallback to arbitrary kept node
+        root_formula = next(iter(G.nodes())) if len(G.nodes()) else None
+
+    print(f"  {len(G.nodes())} nodes after trimming (from {len(unique_map)} unique)")
 
     # Compute layout and flip 180 degrees
-    pos = radial_layout(G, root_id, radius_step=3.0)
-    pos = {nid: (-x, -y) for nid, (x, y) in pos.items()}
+    pos = radial_layout(G, root_formula, radius_step=3.0) if root_formula is not None else {}
+    pos = {nid: (-x, -y) for nid, (x, y) in pos.items()} if pos else {}
 
-    # Collect values for coloring: composite, ehull_reward, r_dos
-    composites = {}
+    # Extract metrics from graph node attributes for coloring
+    composites = {n: G.nodes[n].get('composite', None) for n in G.nodes()}
     ehull_rewards = {}
     r_doss = {}
-    for nid, info in tree_data.items():
-        if info.get("composite") is not None:
-            composites[nid] = info["composite"]
-        # compute ehull_reward if e_hull present
-        if info.get("e_hull") is not None:
-            try:
-                eh = ehull_reward(info["e_hull"]) if info["e_hull"] is not None else np.nan
-            except Exception:
-                eh = np.nan
-            ehull_rewards[nid] = eh
-        # r_dos available
-        r_doss[nid] = info.get("r_dos", 0.0)
+    visit_counts = {}
+    for n in G.nodes():
+        eh = G.nodes[n].get('e_hull', None)
+        try:
+            ehull_rewards[n] = ehull_reward(eh) if eh is not None else np.nan
+        except Exception:
+            ehull_rewards[n] = np.nan
+        r_doss[n] = float(G.nodes[n].get('r_dos', 0.0) or 0.0)
+        visit_counts[n] = float(G.nodes[n].get('visit_count', 0) or 0.0)
 
-    # Prepare colormap helper
-    def make_cmap_and_norm(values, cmap_name='RdBu'):
-        arr = [v for v in values if v is not None and not pd.isna(v)]
-        if not arr:
-            return None, None
-        vmin = min(arr)
-        vmax = max(arr)
-        cmap = cm.get_cmap(cmap_name)
-        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-        return cmap, norm
-
-    # Create white->color colormaps for clear gradient visualization
-    def white_to_color_cmap(color):
-        return mcolors.LinearSegmentedColormap.from_list('wtc', ['white', color])
-
-    cmap_comp = white_to_color_cmap('#1f77b4')
+    # Choose readable sequential colormaps
+    cmap_comp = cm.get_cmap('viridis')
     arr_comp = [v for v in composites.values() if v is not None and not pd.isna(v)]
-    norm_comp = mcolors.Normalize(vmin=min(arr_comp), vmax=max(arr_comp))
+    norm_comp = mcolors.Normalize(vmin=min(arr_comp), vmax=max(arr_comp)) if arr_comp else None
 
-    cmap_ehull = white_to_color_cmap('#ff7f0e')
+    cmap_ehull = cm.get_cmap('Oranges')
     arr_eh = [v for v in ehull_rewards.values() if v is not None and not pd.isna(v)]
     norm_ehull = mcolors.Normalize(vmin=min(arr_eh), vmax=max(arr_eh)) if arr_eh else None
 
-    cmap_rdos = white_to_color_cmap('#2ca02c')
+    cmap_rdos = cm.get_cmap('Greens')
     arr_r = [v for v in r_doss.values() if v is not None and not pd.isna(v)]
     norm_rdos = mcolors.Normalize(vmin=min(arr_r), vmax=max(arr_r)) if arr_r else None
 
-    if cmap_comp is None:
+    if norm_comp is None:
         print("No composite scores available")
         return 1
 
-    # Prepare node colors for each metric
-    def node_colors_for(metric_dict, cmap, norm):
+    def node_colors_for_from_graph(attr_name, cmap, norm, scale=1.0):
         cols = []
         for nid in G.nodes():
-            if nid in metric_dict and norm is not None:
-                cols.append(cmap(norm(metric_dict[nid])))
-            else:
+            val = G.nodes[nid].get(attr_name, None)
+            if val is None or (isinstance(val, float) and pd.isna(val)) or norm is None:
                 cols.append('lightgray')
+            else:
+                cols.append(cmap(norm(float(val) * scale)))
         return cols
 
-    node_colors_comp = node_colors_for(composites, cmap_comp, norm_comp)
-    node_colors_ehull = node_colors_for(ehull_rewards, cmap_ehull, norm_ehull)
-    # Scale r_dos by 2.5 for coloring (visual weighting), do not change label text
-    rdos_scaled = {k: 2.5 * v for k, v in r_doss.items()}
-    # use white->green cmap for scaled rdos
-    cmap_rdos_scaled = cmap_rdos
-    norm_rdos_scaled = mcolors.Normalize(vmin=min(rdos_scaled.values()), vmax=max(rdos_scaled.values())) if rdos_scaled else None
-    node_colors_rdos = node_colors_for(rdos_scaled, cmap_rdos_scaled, norm_rdos_scaled)
+    node_colors_comp = node_colors_for_from_graph('composite', cmap_comp, norm_comp)
+    node_colors_ehull = node_colors_for_from_graph('e_hull', cmap_ehull, norm_ehull)
+    gamma_vis = 2.5
+    node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=gamma_vis)
+
+    # Compute per-node entropy from visit counts to separate points visually
+    total_visits = sum(visit_counts.values()) if visit_counts else 0.0
+    entropy_raw = {}
+    for nid, vc in visit_counts.items():
+        if total_visits > 0 and vc > 0:
+            p = vc / total_visits
+            entropy_raw[nid] = -p * math.log(p)
+        else:
+            entropy_raw[nid] = 0.0
+    ent_vals = list(entropy_raw.values()) if entropy_raw else [0.0]
+    ent_min, ent_max = min(ent_vals), max(ent_vals)
+    ent_norm = {n: (entropy_raw[n] - ent_min) / (ent_max - ent_min) if ent_max > ent_min else 0.0 for n in entropy_raw}
+
+    # Apply an entropy-driven radial offset to positions to spread nodes with different entropy
+    extra_radius = 2.0
+    pos_entropy = {}
+    for nid, (x, y) in pos.items():
+        r = math.hypot(x, y)
+        theta = math.atan2(y, x)
+        ent = ent_norm.get(nid, 0.0)
+        r_new = r + ent * extra_radius
+        pos_entropy[nid] = (r_new * math.cos(theta), r_new * math.sin(theta))
+    pos = pos_entropy
 
     # Set global font size to 10pt for consistent publication text
     plt.rcParams.update({'font.size': 10})
@@ -250,7 +333,7 @@ def main():
     panels = [
         (axes[0], node_colors_comp, cmap_comp, norm_comp, 'Composite Score'),
         (axes[1], node_colors_ehull, cmap_ehull, norm_ehull, r"$r_{E_{\mathrm{Hull}}}$"),
-        (axes[2], node_colors_rdos, cmap_rdos_scaled, norm_rdos_scaled, r"$r_{\mathrm{DOS}}$")
+        (axes[2], node_colors_rdos, cmap_rdos, norm_rdos, r"$r_{\mathrm{DOS}}$")
     ]
 
     labels_abc = ['(a)', '(b)', '(c)']
