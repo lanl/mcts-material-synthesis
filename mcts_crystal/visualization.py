@@ -16,6 +16,46 @@ from collections import defaultdict
 from .node import MCTSTreeNode
 from .mcts import MCTS
 
+F_BLOCK = {
+    "La","Ce","Pr","Nd","Pm","Sm","Eu","Gd","Tb","Dy","Ho","Er","Tm","Yb","Lu",
+    "Ac","Th","Pa","U","Np","Pu","Am","Cm","Bk","Cf","Es","Fm","Md","No","Lr"
+}
+
+TRANSITION_METALS = {
+    "Sc","Ti","V","Cr","Mn","Fe","Co","Ni","Cu","Zn",
+    "Y","Zr","Nb","Mo","Tc","Ru","Rh","Pd","Ag","Cd",
+    "Hf","Ta","W","Re","Os","Ir","Pt","Au","Hg"
+}
+
+GROUP_IV = {"C", "Si", "Ge", "Sn", "Pb"}
+
+
+def parse_formula(formula):
+    tokens = re.findall(r'([A-Z][a-z]?)(\d*)', formula)
+    return {el: int(cnt) if cnt else 1 for el, cnt in tokens}
+
+SUBSCRIPT_MAP = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+def reorder_formula_unicode(formula):
+    parsed = parse_formula(formula)
+
+    f_block = [el for el in parsed if el in F_BLOCK]
+    tm = [el for el in parsed if el in TRANSITION_METALS]
+    g4 = [el for el in parsed if el in GROUP_IV]
+
+    ordered = f_block + tm + g4
+
+    out = []
+    for el in ordered:
+        n = parsed[el]
+        if n == 1:
+            out.append(el)
+        else:
+            out.append(el + str(n).translate(SUBSCRIPT_MAP))
+
+    return "".join(out)
+
+
 
 class TreeVisualizer:
     """
@@ -177,7 +217,11 @@ class TreeVisualizer:
             print("No data to plot")
             return fig
             
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -303,7 +347,11 @@ class TreeVisualizer:
             
         # Convert stat_dict to DataFrame
         df = pd.DataFrame(mcts.stat_dict).T
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -395,7 +443,11 @@ class TreeVisualizer:
             print("No data to plot")
             return fig
             
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -487,7 +539,11 @@ class TreeVisualizer:
             
         # Convert stat_dict to DataFrame
         df = pd.DataFrame(mcts.stat_dict).T
-        df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df.shape[1] == 6:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -624,8 +680,15 @@ class TreeVisualizer:
         ax2 = plt.subplot(2, 2, 3)
         if mcts.stat_dict:
             df = pd.DataFrame(mcts.stat_dict).T
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull']
-            df['e_form'] = -df['best_reward']
+            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+            if df.shape[1] == 6:
+                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+            elif df.shape[1] == 5:
+                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+            else:
+                # Old format with only 4 columns
+                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull']
+                df['e_form'] = -df['best_reward']
             df = df.sort_values('e_form').head(10)
             
             bars = ax2.bar(range(len(df)), df['e_form'], color='lightcoral', alpha=0.7)
@@ -732,7 +795,7 @@ class TreeVisualizer:
             return
         
         # Compute radial layout
-        pos = self._radial_layout_scaled(G, root_id, radius_step=2.5)
+        pos = self._radial_layout_scaled(G, root_id, radius_step=3.0)
         
         # Load formation energies from CSV for coloring
         compound_energies = self._load_compound_energies(output_dir, csv_file)
@@ -785,7 +848,7 @@ class TreeVisualizer:
         plt.close()
         
         print(f"Radial tree visualization saved to {output_path}")
-        
+
     def _build_tree_data_from_mcts(self, mcts: MCTS) -> Dict:
         """Build tree data dictionary from MCTS instance."""
         tree_data = {}
@@ -795,16 +858,18 @@ class TreeVisualizer:
             # Get node information
             formula = node.get_chemical_formula()
             ucb = node.get_ucb() if node.parent is not None else None
-            
+
             tree_data[node_id] = {
                 "formula": formula,
                 "ucb": ucb,
                 "best_reward": node.get_rewards(total=False),
                 "total_reward": node.get_rewards(total=True),
                 "visit_count": node.t_of_visit,
-                "parent_id": parent_id
+                "parent_id": parent_id,
+                "e_form": node.e_form,  # Add e_form directly from node
+                "e_above_hull": node.e_above_hull  # Add e_above_hull directly from node
             }
-            
+
             # Traverse children
             for i, child in enumerate(node.children):
                 child_id = node_id * 100 + i + 1  # Simple ID scheme
@@ -860,6 +925,7 @@ class TreeVisualizer:
             pos.update(self._radial_layout_scaled(
                 G, child, radius_step, child_angle_range, level + 1, pos, total_descendants
             ))
+        # pos = {n: (-x, -y) for n, (x, y) in pos.items()}
         return pos
     
     def _load_compound_energies(self, output_dir: str, csv_file: Optional[str] = None) -> Dict:
@@ -926,7 +992,11 @@ class TreeVisualizer:
         
         # Convert stat_dict to DataFrame for easier processing
         df_stats = pd.DataFrame(stat_dict).T
-        df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df_stats.shape[1] == 6:
+            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df_stats = df_stats.reset_index()
         df_stats.columns = ['formula'] + list(df_stats.columns[1:])
         
@@ -1005,7 +1075,11 @@ class TreeVisualizer:
         
         # Convert stat_dict to DataFrame for easier processing
         df_stats = pd.DataFrame(stat_dict).T
-        df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
+        if df_stats.shape[1] == 6:
+            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
+        else:
+            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
         df_stats = df_stats.reset_index()
         df_stats.columns = ['formula'] + list(df_stats.columns[1:])
         
@@ -1062,11 +1136,11 @@ class TreeVisualizer:
             
         return fig
     
-    def _get_node_colors(self, G: nx.DiGraph, root_id: int, 
+    def _get_node_colors(self, G: nx.DiGraph, root_id: int,
                         compound_energies: Dict) -> List[str]:
         """Determine node colors based on formation energy."""
         node_colors = []
-        
+
         for node in G.nodes():
             if node == root_id:
                 node_colors.append('red')
@@ -1074,11 +1148,11 @@ class TreeVisualizer:
                 # Get formula from node label and look up energy
                 node_data = G.nodes[node]
                 label = node_data.get('label', '')
-                
+
                 # Extract formula from label (first line)
                 formula = label.split('\n')[0] if label else ''
                 e_form = compound_energies.get(formula, None)
-                
+
                 if e_form is not None:
                     if e_form < -0.2:  # Very stable
                         node_colors.append('darkgreen')
@@ -1090,5 +1164,7 @@ class TreeVisualizer:
                         node_colors.append('lightcoral')
                 else:
                     node_colors.append('lightgray')  # No energy data
-        
+
+        return node_colors
+
         return node_colors

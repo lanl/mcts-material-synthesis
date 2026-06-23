@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
 """
-Simple MCTS Crystal Structure Optimization Runner
+Thin compatibility wrapper for `python run_mcts.py [OPTIONS]`.
 
-Usage:
-    python run_mcts.py [--iterations N] [--structure path/to/file.cif] [--rollout-method METHOD] [--no-labels]
-
-Examples:
-    python run_mcts.py                                    # Default: 1000 iterations, both rollout methods
-    python run_mcts.py --iterations 100                  # 100 iterations
-    python run_mcts.py --structure my_structure.cif      # Custom structure
-    python run_mcts.py --rollout-method fe               # Formation energy rollouts only
-    python run_mcts.py --rollout-method eh               # Energy above hull rollouts only
-    python run_mcts.py --rollout-method both             # Both methods (default)
-    python run_mcts.py --f-block-mode experimental       # Experimental actinides mode (no Ac)
-    python run_mcts.py --no-labels                       # Turn off labels on radial tree visualization
-    python run_mcts.py --iterations 200 --structure my_structure.cif --rollout-method fe
+The implementation lives in mcts_crystal/cli.py so it ships as part of the
+installable package (`pip install -e .` also gives you the `mcts-run` console
+command). This wrapper exists so `python run_mcts.py ...` keeps working exactly
+as before, with or without an editable install. See `python run_mcts.py --help`
+or mcts_crystal/cli.py for usage.
 """
 
 import sys
