@@ -2,10 +2,13 @@
 Results analysis tools for MCTS crystal structure optimization.
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from .mcts import MCTS
+from .mcts import MCTS, stat_dict_to_dataframe
+
+logger = logging.getLogger(__name__)
 
 
 class ResultsAnalyzer:
@@ -30,9 +33,9 @@ class ResultsAnalyzer:
                     formula = row['name']
                     e_form = float(row['e_form'])
                     self.formation_energy_lookup[formula] = e_form
-                print(f"Loaded formation energies from: {csv_file}")
+                logger.info(f"Loaded formation energies from: {csv_file}")
         except Exception as e:
-            print(f"Warning: Could not load formation energies: {e}")
+            logger.warning(f"Could not load formation energies: {e}")
     
     def _normalize_formula(self, formula: str) -> str:
         """Normalize chemical formula for matching."""
@@ -88,12 +91,7 @@ class ResultsAnalyzer:
             return pd.DataFrame()
             
         # Convert to DataFrame
-        df = pd.DataFrame(stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df = stat_dict_to_dataframe(stat_dict)
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -123,13 +121,8 @@ class ResultsAnalyzer:
         if not stat_dict:
             return {}
 
-        df = pd.DataFrame(stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
-        
+        df = stat_dict_to_dataframe(stat_dict)
+
         # The e_form is now directly available in the stat_dict
         df['formation_energy'] = df['e_form']
         
@@ -166,18 +159,13 @@ class ResultsAnalyzer:
         if not stat_dict:
             return {}
 
-        df = pd.DataFrame(stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df = stat_dict_to_dataframe(stat_dict)
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
-        
+
         # The e_form is now directly available in the stat_dict
         df['formation_energy'] = df['e_form']
-        
+
         # Extract elements from formulas
         transition_metals = []
         group_iv_elements = []
@@ -293,7 +281,7 @@ class ResultsAnalyzer:
         if save_path:
             with open(save_path, 'w') as f:
                 f.write(report)
-            print(f"Summary report saved to {save_path}")
+            logger.info(f"Summary report saved to {save_path}")
             
         return report
         
@@ -305,13 +293,8 @@ class ResultsAnalyzer:
             stat_dict: Statistics dictionary from MCTS run
             filename: Output filename
         """
-        df = pd.DataFrame(stat_dict).T
+        df = stat_dict_to_dataframe(stat_dict)
         if not df.empty:
-            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-            if df.shape[1] == 6:
-                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-            else:
-                df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
             df = df.reset_index()
             df.columns = ['formula'] + list(df.columns[1:])
             
@@ -322,6 +305,6 @@ class ResultsAnalyzer:
             df = df.sort_values('formation_energy')
             
             df.to_csv(filename, index=False)
-            print(f"Results exported to {filename}")
+            logger.info(f"Results exported to {filename}")
         else:
-            print("No results to export")
+            logger.info("No results to export")
