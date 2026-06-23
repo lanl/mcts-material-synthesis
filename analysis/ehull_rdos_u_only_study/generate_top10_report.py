@@ -33,7 +33,63 @@ def main():
 
     # Rename columns for consistency
     df['name'] = df['formula']
-    df['r_DOS'] = df['dos_reward']
+    # Compute r_DOS: prefer existing `dos_reward` if available, otherwise lookup from doscar_rewards.csv
+    if 'dos_reward' in df.columns:
+        df['r_DOS'] = df['dos_reward']
+    else:
+        # search up to a few parent levels for doscar file
+        MAX_PARENT_DEPTH = 4
+        search_roots = [script_dir] + list(script_dir.parents)[:MAX_PARENT_DEPTH]
+        dos_path = None
+        for r in search_roots:
+            try:
+                cand = list(Path(r).rglob('doscar_rewards.csv'))
+            except OSError:
+                cand = []
+            if cand:
+                dos_path = cand[0]
+                break
+        df['r_DOS'] = 0.0
+        if dos_path is not None:
+            try:
+                df_dos = pd.read_csv(dos_path)
+                if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
+                    dos_iter = zip(df_dos['compound_name'], df_dos['reward_normalized'])
+                elif df_dos.shape[1] >= 2:
+                    dos_iter = zip(df_dos.iloc[:,0], df_dos.iloc[:,1])
+                else:
+                    dos_iter = []
+                F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+                import re
+                def parse_elems(s):
+                    if pd.isna(s):
+                        return []
+                    if '-' in str(s):
+                        parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
+                        return parts
+                    return re.findall(r'[A-Z][a-z]?', str(s))
+
+                dos_by_key = {}
+                for name, val in dos_iter:
+                    try:
+                        v = float(val)
+                    except Exception:
+                        continue
+                    v = max(0.0, min(1.0, v))
+                    elems = parse_elems(name)
+                    key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+                    if not key:
+                        continue
+                    dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), v)
+                def key_from_name(name):
+                    elems = parse_elems(name)
+                    return tuple(sorted([e for e in elems if e not in F_BLOCK]))
+                for idx, row in df.iterrows():
+                    key = key_from_name(row['name'])
+                    if key in dos_by_key:
+                        df.at[idx, 'r_DOS'] = dos_by_key[key]
+            except Exception:
+                pass
 
     # Compute the E_hull reward
     df['ehull_reward'] = df['e_above_hull'].apply(ehull_reward)

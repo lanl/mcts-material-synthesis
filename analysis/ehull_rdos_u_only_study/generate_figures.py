@@ -25,9 +25,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import subprocess
 import sys
+import shutil
+import re
 
 
-def compute_composite(df, beta=1.0, gamma=2.5):
+def compute_composite(df, beta=1.0, gamma=1.0):
     try:
         from mcts_crystal.node import ehull_reward
     except Exception:
@@ -37,15 +39,124 @@ def compute_composite(df, beta=1.0, gamma=2.5):
             return -_np.tanh(300.0 * (e_hull - 0.05))
     df = df.copy()
     df['name'] = df.get('formula', df.get('name'))
-    # normalize available DOS column names
-    if 'dos_reward' in df.columns and 'r_DOS' not in df.columns:
-        df['r_DOS'] = df['dos_reward']
-    df['r_DOS'] = df.get('r_DOS', 0.0).fillna(0.0)
+    # ensure r_DOS is computed from canonical doscar rewards if not present
+    # Do NOT store gamma-weighted values in r_DOS; r_DOS should be the raw [0,1] reward.
+    if 'r_DOS' not in df.columns or df['r_DOS'].isnull().all() or (df['r_DOS'].astype(float) == 0.0).all():
+        # load master mapping from repo root
+        repo_root = Path(__file__).parents[2]
+        df_master, dos_by_key = load_master_mace(repo_root)
+
+        # element-set key function (ignore f-block differences)
+        F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+        def parse_elems(s):
+            if pd.isna(s):
+                return []
+            if '-' in str(s):
+                parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
+                return parts
+            return re.findall(r'[A-Z][a-z]?', str(s))
+
+        def key_from_name(name):
+            elems = parse_elems(name)
+            return tuple(sorted([e for e in elems if e not in F_BLOCK]))
+
+        # default to 0.0
+        df['r_DOS'] = 0.0
+        for idx, row in df.iterrows():
+            key = key_from_name(row.get('name', row.get('formula', '')))
+            if key in dos_by_key:
+                df.at[idx, 'r_DOS'] = float(dos_by_key[key])
+            else:
+                # fallback: try normalized name match against master if available
+                if df_master is not None:
+                    nm = str(row.get('name', row.get('formula', '')))
+                    # try exact match on name/formula
+                    try:
+                        match = df_master[(df_master.get('name', df_master.get('formula')) == nm)].iloc[0]
+                        # if master has r_dos or similar, use it
+                        if 'r_dos' in df_master.columns and not pd.isna(match.get('r_dos')):
+                            df.at[idx, 'r_DOS'] = float(match.get('r_dos'))
+                    except Exception:
+                        pass
     df['ehull_reward'] = df['e_above_hull'].apply(ehull_reward)
+    # Keep raw r_DOS as canonical; composite uses gamma weighting when computing score
     df['weighted_r_DOS'] = gamma * df['r_DOS']
     df['composite_score'] = beta * df['ehull_reward'] + df['weighted_r_DOS']
     df_sorted = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
     return df_sorted
+
+
+def load_master_mace(repo_root: Path):
+    """Load canonical high-throughput MACE CSV and DOS rewards (if present).
+    Returns (df_mace, dos_by_key) where dos_by_key maps element-set keys to reward.
+    """
+    # Search for canonical files within repo_root and a few parent levels (cover sibling folders)
+    MAX_PARENT_DEPTH = 4
+    search_roots = [repo_root] + list(repo_root.parents)[:MAX_PARENT_DEPTH]
+    mace_candidates = []
+    for r in search_roots:
+        try:
+            mace_candidates.extend(list(Path(r).rglob('high_throughput_mace_results.full.csv')))
+        except OSError:
+            continue
+    mace_csv = mace_candidates[0] if mace_candidates else (repo_root / 'high_throughput_mace_results.full.csv')
+    df_mace = None
+    dos_by_key = {}
+    if mace_csv.exists():
+        try:
+            df_mace = pd.read_csv(mace_csv)
+        except Exception:
+            df_mace = None
+
+    # Load doscar rewards if available (search parents/siblings)
+    dos_candidates = []
+    for r in search_roots:
+        try:
+            dos_candidates.extend(list(Path(r).rglob('doscar_rewards.csv')))
+        except OSError:
+            continue
+    doscar_csv = dos_candidates[0] if dos_candidates else (repo_root / 'doscar_rewards.csv')
+    df_dos = None
+    if doscar_csv.exists():
+        try:
+            df_dos = pd.read_csv(doscar_csv)
+        except Exception:
+            df_dos = None
+
+    F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+
+    def parse_elems(s):
+        if pd.isna(s):
+            return []
+        if '-' in str(s):
+            parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
+            return parts
+        return re.findall(r'[A-Z][a-z]?', str(s))
+
+    if df_dos is not None:
+        # build name->reward mapping then collapse to element-set keys (ignore f-block differences)
+        # Prefer `reward_normalized` when present; fall back to the second column otherwise.
+        if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
+            dos_iter = zip(df_dos['compound_name'], df_dos['reward_normalized'])
+        elif df_dos.shape[1] >= 2:
+            dos_iter = zip(df_dos.iloc[:, 0], df_dos.iloc[:, 1])
+        else:
+            dos_iter = []
+
+        for name, val in dos_iter:
+            try:
+                v = float(val)
+            except Exception:
+                continue
+            # clamp normalized rewards to [0,1]
+            v = max(0.0, min(1.0, v))
+            elems = parse_elems(name)
+            key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+            if not key:
+                continue
+            dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), float(v))
+
+    return df_mace, dos_by_key
 
 
 def plot_top10(df_sorted, out_dir: Path):
@@ -55,7 +166,8 @@ def plot_top10(df_sorted, out_dir: Path):
     fig, ax = plt.subplots(figsize=(4, 4))
     ranks = np.arange(1, len(top10) + 1)
     ehull_vals = top10['ehull_reward'].values
-    rdos_vals = top10['r_DOS'].values * 2.5
+    # Use raw r_DOS for visualization (do not apply gamma scaling here)
+    rdos_vals = top10['r_DOS'].values
 
     ax.barh(ranks, ehull_vals, color="#ff7f0e", edgecolor='k')
     ax.barh(ranks, rdos_vals, left=ehull_vals, color="#2ca02c", edgecolor='k')
@@ -73,10 +185,10 @@ def plot_top10(df_sorted, out_dir: Path):
     x = np.arange(len(top10))
     width = 0.35
     ax.bar(x - width/2, top10['e_above_hull'].values, width, label='E_hull', color="#ff7f0e")
-    ax.bar(x + width/2, 2.5 * top10['r_DOS'].values, width, label='2.5*r_DOS', color="#2ca02c")
+    ax.bar(x + width/2, top10['r_DOS'].values, width, label='r_DOS', color="#2ca02c")
     ax.set_xticks(x)
     ax.set_xticklabels(top10['name'].values, rotation=45, ha='right')
-    ax.set_ylabel('E_hull / 2.5*r_DOS')
+    ax.set_ylabel('E_hull / r_DOS')
     ax.legend()
     plt.tight_layout()
     out = out_dir / 'top10_ehull_rdos_bars.png'
@@ -85,9 +197,100 @@ def plot_top10(df_sorted, out_dir: Path):
 
 
 def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
-    # Prefer using the analysis CSV that already contains r_DOS and e_above_hull
+    # Prefer using a canonical high-throughput CSV of the full design-space (if available).
+    # This ensures the "All Compounds" backdrop contains the full U-containing set (~108).
+    # Search the repo for `high_throughput_mace_results.full.csv` and prefer it; otherwise
+    # fall back to the analysis composite CSV.
+    mace_candidates = list(repo_root.rglob('high_throughput_mace_results.full.csv'))
+    mace_csv = mace_candidates[0] if mace_candidates else (repo_root / 'high_throughput_mace_results.full.csv')
+
     comp_csv = out_dir / 'all_compounds_by_composite_score.csv'
-    if comp_csv.exists():
+    df_u = None
+    # gamma prefactor to experiment with composite weighting on overlays
+    gamma_prefactor = 0.25
+
+    if mace_csv.exists():
+        try:
+            df_mace = pd.read_csv(mace_csv)
+        except Exception:
+            df_mace = None
+
+        # Attempt to attach r_DOS via any doscar rewards file if present
+        dos_candidates = list(repo_root.rglob('doscar_rewards.csv'))
+        doscar_csv = dos_candidates[0] if dos_candidates else (repo_root / 'doscar_rewards.csv')
+
+        df_dos = None
+        if doscar_csv.exists():
+            try:
+                df_dos = pd.read_csv(doscar_csv)
+            except Exception:
+                df_dos = None
+
+        # build name->reward mapping from available columns
+        dos_dict = {}
+        if df_dos is not None:
+            if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
+                dos_dict = dict(zip(df_dos['compound_name'], df_dos['reward_normalized']))
+            else:
+                dos_dict = dict(zip(df_dos.iloc[:, 0], df_dos.iloc[:, 1]))
+
+        # Robust mapping: match by element set excluding the rare-earth/f-block element
+        import re
+        F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+
+        def parse_elems(s):
+            if pd.isna(s):
+                return []
+            if '-' in str(s):
+                parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
+                return parts
+            return re.findall(r'[A-Z][a-z]?', str(s))
+
+        dos_by_key = {}
+        for name, val in dos_dict.items():
+            elems = parse_elems(name)
+            # remove f-block (e.g., Ce) to create a canonical key
+            key_elems = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+            if not key_elems:
+                continue
+            # if duplicates, keep max reward
+            dos_by_key[key_elems] = max(dos_by_key.get(key_elems, float('-inf')), float(val))
+
+        def _make_key_from_formula(formula):
+            elems = parse_elems(formula)
+            key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+            return key
+
+        if df_mace is not None:
+            # attach r_dos by element-set key (ignoring f-block element differences)
+            df_mace['name'] = df_mace.get('name', df_mace.get('formula'))
+            df_mace['r_dos'] = 0.0
+            for idx, row in df_mace.iterrows():
+                key = _make_key_from_formula(row['name'])
+                if key in dos_by_key:
+                    df_mace.at[idx, 'r_dos'] = dos_by_key[key]
+            # preserve previous behavior: ensure column exists
+            if 'r_dos' not in df_mace.columns:
+                df_mace['r_dos'] = 0.0
+            if 'name' not in df_mace.columns and 'formula' in df_mace.columns:
+                df_mace['name'] = df_mace['formula']
+
+            # Filter to U-containing compounds (exclude Ce)
+            def elem_set(name):
+                if pd.isna(name):
+                    return set()
+                s = str(name)
+                if '-' in s:
+                    parts = [p for p in re.split('[^A-Za-z]', s) if p]
+                    return set([p.capitalize() for p in parts])
+                parts = re.findall(r'[A-Z][a-z]?', s)
+                return set(parts)
+
+            df_mace['elem_set'] = df_mace['name'].apply(elem_set)
+            df_u = df_mace[df_mace['elem_set'].apply(lambda s: 'U' in s and 'Ce' not in s)].copy()
+
+    # If we still don't have a mace-derived U list, fall back to the analysis CSV (MCTS outputs)
+    if df_u is None and comp_csv.exists():
         df_all = pd.read_csv(comp_csv)
         # Filter U-containing (no Ce) by formula/name field
         def has_element(name, elem):
@@ -104,67 +307,180 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
         if 'r_DOS' not in df_u.columns and 'dos_reward' in df_u.columns:
             df_u['r_DOS'] = df_u['dos_reward']
         df_u['r_dos'] = df_u['r_DOS'].fillna(0.0)
-    else:
-        mace_csv = repo_root / 'high_throughput_mace_results.full.csv'
-        doscar_csv = repo_root / 'doscar_rewards.csv'
-        if not mace_csv.exists() or not doscar_csv.exists():
-            print('Skipping ehull_vs_rdos: missing data sources')
-            return
 
-        df_mace = pd.read_csv(mace_csv)
-        df_dos = pd.read_csv(doscar_csv)
-        # build name->reward mapping from available columns
-        if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
-            dos_dict = dict(zip(df_dos['compound_name'], df_dos['reward_normalized']))
-        else:
-            # fallback: try name/reward
-            dos_dict = dict(zip(df_dos.iloc[:, 0], df_dos.iloc[:, 1]))
-
-        def _norm(s):
-            if pd.isna(s):
-                return ''
-            return ''.join([c for c in str(s).lower() if c.isalnum()])
-
-        dos_dict_norm = { _norm(k): v for k, v in dos_dict.items() }
-        df_mace['name_norm'] = df_mace.get('name', df_mace.get('formula')).apply(_norm)
-        df_mace['r_dos'] = df_mace['name_norm'].map(dos_dict_norm).fillna(0.0)
-        if 'name' not in df_mace.columns and 'formula' in df_mace.columns:
-            df_mace['name'] = df_mace['formula']
-        df_u = df_mace[df_mace['name'].apply(lambda x: 'u' in str(x).lower())].copy()
-        df_u = df_u[~df_u['name'].apply(lambda x: 'ce' in str(x).lower())].copy()
+    if df_u is None or df_u.empty:
+        print('Skipping ehull_vs_rdos: no U-containing data found')
+        return
 
     # Some entries may not map; attempt conversion using same heuristic as DoscarRewardLookup
     # For robustness, keep 0.0 where not found.
 
+    # attempt to load experimental compounds list (if provided elsewhere in repo)
+    exp_src = repo_root / 'redo_mcts_materials' / 'experimental_comparison' / 'compounds_filtered.dat'
+    exp_dst = out_dir / 'compounds_filtered.dat'
+    df_exp = None
+    if exp_src.exists():
+        try:
+            df_exp = pd.read_csv(exp_src, sep=r"\s+", comment='#', header=None,
+                                names=['name', 'e_form', 'e_hull'])
+            # copy into analysis folder for consistency and ignore in git
+            if not exp_dst.exists():
+                shutil.copy(exp_src, exp_dst)
+        except Exception:
+            df_exp = None
+
     fig, ax = plt.subplots(figsize=(4, 4))
     # Use r_dos (already present) or fall back to r_DOS column
     rdos_vals = df_u.get('r_dos', df_u.get('r_DOS', pd.Series(0.0))).astype(float)
-    ax.scatter(2.5 * rdos_vals, df_u['e_above_hull'].astype(float), s=6, color='#D0D0D0', label='All Compounds')
+    ax.scatter(rdos_vals, df_u['e_above_hull'].astype(float), s=6, color='#D0D0D0', label='All Compounds (U-containing)')
 
-    # Top10 overlay if available (look in out_dir)
+    # Normalize helper
+    def _norm(s):
+        if pd.isna(s):
+            return ''
+        return ''.join([c for c in str(s).lower() if c.isalnum()])
+
+    # prepare df_u name_norm
+    if 'name' in df_u.columns:
+        df_u['name_norm'] = df_u['name'].apply(_norm)
+    else:
+        df_u['name_norm'] = df_u.get('formula', '').apply(_norm)
+
+    # synthesized names (successful)
+    synthesized_names = ['U-Sn-V', 'U-Sn-Nb', 'U-Ge-Cr', 'U-Ge-Co']
+    import re
+    def elem_set(name):
+        if pd.isna(name):
+            return set()
+        s = str(name)
+        if '-' in s:
+            parts = [p for p in re.split('[^A-Za-z]', s) if p]
+            return set([p.capitalize() for p in parts])
+        parts = re.findall(r'[A-Z][a-z]?', s)
+        return set(parts)
+
+    synth_sets = [elem_set(n) for n in synthesized_names]
+
+    # experimental attempted compounds (from df_exp) and classify as successful/unsuccessful
+    exp_unsucc_x, exp_unsucc_y = [], []
+    exp_succ_x, exp_succ_y = [], []
+    if df_exp is not None and not df_exp.empty:
+        df_exp['name_norm'] = df_exp['name'].apply(_norm)
+        name_map = {n: r for n, r in zip(df_u['name_norm'], df_u.to_dict('records'))}
+        for _, r in df_exp.iterrows():
+            nrm = r['name_norm']
+            if nrm in name_map:
+                row = name_map[nrm]
+                x = float(row.get('r_dos', row.get('r_DOS', 0.0))) * gamma_prefactor
+                y = float(row.get('e_above_hull', r['e_hull']))
+                # classify by element set equality
+                if any(elem_set(r['name']) == s for s in synth_sets):
+                    exp_succ_x.append(x); exp_succ_y.append(y)
+                else:
+                    exp_unsucc_x.append(x); exp_unsucc_y.append(y)
+
+    # plot experimental attempted: unsuccessful = purple unfilled squares
+    if exp_unsucc_x:
+        ax.scatter(exp_unsucc_x, exp_unsucc_y, s=80, marker='s', facecolors='none', edgecolors='#9467bd', linewidths=1.2, label='Unsuccessful Synthesis')
+    # plot experimental successful: purple filled squares
+    if exp_succ_x:
+        ax.scatter(exp_succ_x, exp_succ_y, s=100, marker='s', facecolors='#9467bd', edgecolors='#9467bd', linewidths=0.8, label='Successful Synthesis')
+
+    # Top10 overlay if available (look in out_dir) - teal filled triangles for MCTS predictions
     composite_csv = out_dir / 'all_compounds_by_composite_score.csv'
     if composite_csv.exists():
         df_comp = pd.read_csv(composite_csv)
         top10 = df_comp.head(10)
         mace_lookup = dict(zip(df_u['name'], zip(df_u['e_above_hull'], df_u.get('r_dos', df_u.get('r_DOS', pd.Series(0.0))))))
-        xs, ys, labels = [], [], []
+        xs, ys = [], []
         for _, row in top10.iterrows():
             name = row['name'] if 'name' in row else row.get('formula')
             if name in mace_lookup:
                 e_hull, rdos = mace_lookup[name]
-                xs.append(2.5 * rdos)
+                xs.append(float(rdos) * gamma_prefactor)
                 ys.append(e_hull)
-                labels.append(name)
-        ax.scatter(xs, ys, s=30, color='#17BECF', label='Top 10 Predictions')
+        if xs:
+            ax.scatter(xs, ys, s=80, color='#5BC0EB', marker='^', edgecolors='#5BC0EB', label='Top 10 (MCTS)')
 
-    ax.set_xlabel('2.5 * r_DOS')
-    ax.set_ylabel('E_hull (eV/atom)')
+    # (Top10 plotting handled earlier to control marker style)
+
+    ax.set_xlabel(r"$r_{\mathrm{DOS}}$")
+    ax.set_ylabel(r"$E_{\mathrm{Hull}}$ (eV/atom)")
     ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
-    plt.legend(fontsize=8)
+    # Create a clean legend with specific marker styles so Top10 appears as a triangle
+    from matplotlib.lines import Line2D
+    legend_handles = []
+    # All compounds: small light-gray circle (no line)
+    legend_handles.append(Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='#D0D0D0', markeredgecolor='#D0D0D0', markersize=6, label='All Compounds'))
+    # Top10 (MCTS): light blue filled triangle (no line)
+    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='#5BC0EB', markersize=8, label='Top 10 (MCTS)'))
+    # Unsuccessful: purple unfilled square (no line)
+    legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='none', markeredgecolor='#9467bd', markersize=8, label='Unsuccessful Synthesis'))
+    # Successful: purple filled square with purple edge (no line)
+    legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='#9467bd', markeredgecolor='#9467bd', markersize=9, label='Successful Synthesis'))
+    ax.legend(handles=legend_handles, fontsize=8)
     plt.tight_layout()
     out = out_dir / 'ehull_vs_rdos.png'
     fig.savefig(out, dpi=300)
     plt.close(fig)
+
+
+def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
+    """Write a LaTeX table of the top 15 compounds with requested columns."""
+    tables_dir = out_dir / 'tables'
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    top15 = df_sorted.head(15).copy()
+    # ensure columns exist
+    if 'r_DOS' not in top15.columns and 'dos_reward' in top15.columns:
+        top15['r_DOS'] = top15['dos_reward']
+    if 'ehull_reward' not in top15.columns and 'e_above_hull' in top15.columns:
+        # recompute if possible
+        try:
+            from mcts_crystal.node import ehull_reward
+        except Exception:
+            def ehull_reward(x):
+                import numpy as _np
+                return -_np.tanh(300.0 * (x - 0.05))
+        top15['ehull_reward'] = top15['e_above_hull'].apply(ehull_reward)
+
+    # synthesized detection by element sets
+    synthesized_names = ['U-Sn-V', 'U-Sn-Nb', 'U-Ge-Cr', 'U-Ge-Co']
+    import re
+    def elem_set(name):
+        if pd.isna(name):
+            return set()
+        s = str(name)
+        if '-' in s:
+            parts = [p for p in re.split('[^A-Za-z]', s) if p]
+            return set([p.capitalize() for p in parts])
+        parts = re.findall(r'[A-Z][a-z]?', s)
+        return set(parts)
+
+    synth_sets = [elem_set(n) for n in synthesized_names]
+
+    rows = []
+    for _, r in top15.iterrows():
+        name = r.get('name', r.get('formula', ''))
+        rdos = float(r.get('r_DOS', 0.0)) if pd.notna(r.get('r_DOS', None)) else 0.0
+        ehull_r = float(r.get('ehull_reward', 0.0)) if pd.notna(r.get('ehull_reward', None)) else 0.0
+        comp = float(r.get('composite_score', 0.0)) if pd.notna(r.get('composite_score', None)) else 0.0
+        ehull = float(r.get('e_above_hull', np.nan)) if pd.notna(r.get('e_above_hull', None)) else np.nan
+        is_synth = any(elem_set(name) == s for s in synth_sets)
+        rows.append((name, rdos, ehull_r, comp, ehull, 'Yes' if is_synth else 'No'))
+
+    tex_path = tables_dir / 'top15_u_only.tex'
+    with open(tex_path, 'w') as f:
+        f.write('% Top 15 compounds (U-only study)\n')
+        f.write('\\begin{tabular}{lrrrrc}\n')
+        f.write('\\toprule\n')
+        f.write('Name & r\\_DOS & $r_{E_{\\mathrm{Hull}}}$ & Composite & E\\_hull & Synth \\\\n')
+        f.write('\\midrule\n')
+        for name, rdos, ehull_r, comp, ehull, synth in rows:
+            f.write(f"{name} & {rdos:.4f} & {ehull_r:.4f} & {comp:.4f} & {ehull:.4f} & {synth} \\\\n")
+        f.write('\\bottomrule\n')
+        f.write('\\end{tabular}\n')
+
+    print('Wrote LaTeX table:', tex_path)
 
 
 def plot_composite_convergence(out_dir: Path):
@@ -182,6 +498,7 @@ def plot_composite_convergence(out_dir: Path):
     formulas_seen = set()
     best_composite_history = []
     best_ehull_reward_history = []
+    # Track raw best rDOS history (plot raw r_DOS, not gamma-weighted)
     best_weighted_rdos_history = []
     best_rdos_max_history = []
 
@@ -229,7 +546,8 @@ def plot_composite_convergence(out_dir: Path):
         best_composite_history.append(best_comp)
         best_ehull_reward_history.append(0.0 if np.isnan(best_ehull) else best_ehull)
         # store weighted rDOS for the best-composite compound (for component visualization)
-        best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (gamma * best_rdos))
+        # Append raw r_DOS for plotting
+        best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (best_rdos))
         # store monotonic max rDOS seen so far (unweighted)
         best_rdos_max_history.append(current_max_rdos)
 
@@ -271,6 +589,11 @@ def main():
     df_sorted.to_csv(out_dir / 'all_compounds_by_composite_score.csv', index=False)
     df_sorted.head(10).to_csv(out_dir / 'top10_compounds_by_composite_score.csv', index=False)
     print('Saved composite CSVs')
+    # write LaTeX table of top 15
+    try:
+        write_top15_table(df_sorted, out_dir)
+    except Exception:
+        pass
 
     # Generate figures
     plot_top10(df_sorted, out_dir)

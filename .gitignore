@@ -23,3 +23,5 @@ shunshun_mace_predictions_with_elements.csv
 # MCTS run outputs (regenerate locally with run_mcts.py)
 mcts_results/
 *.pkl
+# Local experimental compounds list (do not commit)
+analysis/ehull_rdos_u_only_study/compounds_filtered.dat

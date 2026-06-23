@@ -251,7 +251,8 @@ def main():
     print(f"  {len(G.nodes())} nodes after trimming (from {len(unique_map)} unique)")
 
     # Compute layout and flip 180 degrees
-    pos = radial_layout(G, root_formula, radius_step=3.0) if root_formula is not None else {}
+    # Increase radius_step to spread points more visibly
+    pos = radial_layout(G, root_formula, radius_step=4.0) if root_formula is not None else {}
     pos = {nid: (-x, -y) for nid, (x, y) in pos.items()} if pos else {}
 
     # Extract metrics from graph node attributes for coloring
@@ -297,8 +298,8 @@ def main():
 
     node_colors_comp = node_colors_for_from_graph('composite', cmap_comp, norm_comp)
     node_colors_ehull = node_colors_for_from_graph('e_hull', cmap_ehull, norm_ehull)
-    gamma_vis = 2.5
-    node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=gamma_vis)
+    # Use raw r_dos for coloring (no visual gamma scaling)
+    node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=1.0)
 
     # Compute per-node entropy from visit counts to separate points visually
     total_visits = sum(visit_counts.values()) if visit_counts else 0.0
@@ -314,7 +315,8 @@ def main():
     ent_norm = {n: (entropy_raw[n] - ent_min) / (ent_max - ent_min) if ent_max > ent_min else 0.0 for n in entropy_raw}
 
     # Apply an entropy-driven radial offset to positions to spread nodes with different entropy
-    extra_radius = 2.0
+    # Increase entropy offset to better separate nodes
+    extra_radius = 4.0
     pos_entropy = {}
     for nid, (x, y) in pos.items():
         r = math.hypot(x, y)
@@ -338,10 +340,12 @@ def main():
 
     labels_abc = ['(a)', '(b)', '(c)']
     for i, (ax, ncols, cmap_m, norm_m, label) in enumerate(panels):
-        nx.draw(G, pos, ax=ax, with_labels=False,
-                node_color=ncols, edge_color='gray', node_size=120,
-                arrows=True, connectionstyle='arc3,rad=0.1',
-                edgecolors='black', linewidths=0.6)
+        # Draw nodes
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_color=ncols, edgecolors='black', linewidths=0.6, node_size=150)
+        # Draw directed edges from parent -> child only
+        nx.draw_networkx_edges(G, pos, ax=ax, edgelist=list(G.edges()),
+                               edge_color='gray', arrows=True, arrowsize=10,
+                               arrowstyle='-|>', connectionstyle='arc3,rad=0.0')
         # add panel letter in top-left
         try:
             abc = labels_abc[i]
