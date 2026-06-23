@@ -41,7 +41,8 @@ class MCTSTreeNode:
 
         Args:
             atoms: ASE Atoms object representing the crystal structure
-            f_block_mode: F-block substitution mode ('u_only', 'full_f_block', or 'experimental')
+            f_block_mode: F-block substitution mode ('u_only', 'full_f_block', 'experimental',
+                'lanthanides_u', or 'lanthanides_u_extended')
             exploration_constant: Exploration constant for UCB calculation (default: 0.1)
             termination_limit: Number of visits before terminating a node (default: 60)
         """
@@ -163,7 +164,6 @@ class MCTSTreeNode:
             # Extended Lanthanides + U mode: allows longer-range jumps
             # This mode enables exploration of heavy lanthanides (Lu, Tm, Yb, etc.)
             lanthanides = list(range(58, 72))  # Ce (58) to Lu (71)
-            allowed_elements = lanthanides + [92]
 
             possible_moves = [atomic_num]
 
@@ -186,7 +186,6 @@ class MCTSTreeNode:
         elif self.f_block_mode == 'lanthanides_u':
             # Lanthanides + U mode: all lanthanides (Ce-Lu) plus Uranium
             lanthanides = list(range(58, 72))  # Ce (58) to Lu (71)
-            allowed_elements = lanthanides + [92]
 
             possible_moves = [atomic_num]
 
@@ -206,7 +205,7 @@ class MCTSTreeNode:
                 possible_moves.append(92)
         elif self.f_block_mode == 'experimental':
             # Experimental mode: actinides (minus La) plus U, allowing adjacent comparisons
-            lanthanides_no_la = list(range(58, 72))  # Ce (90) to La (72)
+            lanthanides_no_la = list(range(58, 72))  # Ce (58) to Lu (71), excludes La (57)
             
             # Start with the current element
             possible_moves = [atomic_num]

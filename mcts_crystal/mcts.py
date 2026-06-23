@@ -2,12 +2,35 @@
 Monte Carlo Tree Search implementation for crystal structure optimization.
 """
 
+import logging
 import random
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional
 from .node import MCTSTreeNode
+
+logger = logging.getLogger(__name__)
+
+# stat_dict entries gained a 6th element (dos_reward) after rDOS support was added;
+# older runs/pickles may still have only the original 5.
+_STAT_DICT_COLUMNS = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+_STAT_DICT_COLUMNS_WITH_DOS = _STAT_DICT_COLUMNS + ['dos_reward']
+
+
+def stat_dict_to_dataframe(stat_dict: Dict) -> pd.DataFrame:
+    """
+    Convert an MCTS stat_dict (formula -> [best_reward, visit_count, terminated,
+    e_above_hull, e_form, (dos_reward)]) into a DataFrame with those column names,
+    indexed by formula. Handles both the 5-element (no dos_reward) and 6-element
+    stat_dict formats, and an empty stat_dict (returned as an empty DataFrame,
+    unchanged, since there are no columns to rename).
+    """
+    df = pd.DataFrame(stat_dict).T
+    if df.empty:
+        return df
+    df.columns = _STAT_DICT_COLUMNS_WITH_DOS if df.shape[1] == 6 else _STAT_DICT_COLUMNS
+    return df
 
 
 class MCTS:
@@ -472,13 +495,8 @@ class MCTS:
         Returns:
             DataFrame with statistics
         """
-        stat_df = pd.DataFrame(self.stat_dict).T
+        stat_df = stat_dict_to_dataframe(self.stat_dict)
         if not stat_df.empty:
-            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-            if stat_df.shape[1] == 6:
-                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-            else:
-                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
             stat_df = stat_df.sort_values(by='visit_count', ascending=False)
         return stat_df
         
@@ -522,7 +540,7 @@ class MCTS:
         convergence_df = self._postprocess_convergence_energies(convergence_df)
 
         convergence_df.to_csv(filename, index=False)
-        print(f"Saved convergence history to {filename}")
+        logger.info(f"Saved convergence history to {filename}")
 
     def _postprocess_convergence_energies(self, df: pd.DataFrame) -> pd.DataFrame:
         """

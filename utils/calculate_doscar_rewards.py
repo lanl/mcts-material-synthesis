@@ -11,9 +11,12 @@ Usage:
     python calculate_doscar_rewards.py
 """
 
+import logging
 import pandas as pd
 import numpy as np
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_compound_reward(peaks_df, sigma=0.5):
@@ -42,29 +45,30 @@ def calculate_compound_reward(peaks_df, sigma=0.5):
 
 def main():
     """Calculate rewards for all compounds in DOSCAR peaks data."""
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-    print("=" * 80)
-    print("DOSCAR PEAKS REWARD CALCULATOR")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("DOSCAR PEAKS REWARD CALCULATOR")
+    logger.info("=" * 80)
 
     # Step 1: Load DOSCAR peaks data
-    print("\n1. Loading DOSCAR peaks data...")
+    logger.info("\n1. Loading DOSCAR peaks data...")
     input_file = Path(__file__).parent.parent / "doscar_peaks_data_with_U.csv"
 
     if not input_file.exists():
-        print(f"❌ Error: Input file not found: {input_file}")
+        logger.error(f"Error: Input file not found: {input_file}")
         return 1
 
     try:
         df = pd.read_csv(input_file)
-        print(f"   ✓ Loaded {len(df)} peak records")
-        print(f"   ✓ Columns: {', '.join(df.columns)}")
+        logger.info(f"   Loaded {len(df)} peak records")
+        logger.info(f"   Columns: {', '.join(df.columns)}")
     except Exception as e:
-        print(f"❌ Error loading data: {e}")
+        logger.error(f"Error loading data: {e}")
         return 1
 
     # Step 2: Filter compounds - prefer core (non-valence) over valence
-    print("\n2. Filtering compounds (prefer core over valence)...")
+    logger.info("\n2. Filtering compounds (prefer core over valence)...")
 
     # Separate core and valence compounds
     core_compounds = df[~df['COMPOUND_NAME'].str.endswith('_valence')]
@@ -83,15 +87,15 @@ def main():
     # Combine core compounds with valence-only compounds
     filtered_df = pd.concat([core_compounds, valence_to_include])
 
-    print(f"   ✓ Core compounds: {len(core_names)}")
-    print(f"   ✓ Valence compounds (no core): {len(missing_core_bases)}")
-    print(f"   ✓ Total compounds to process: {len(core_names) + len(missing_core_bases)}")
+    logger.info(f"   Core compounds: {len(core_names)}")
+    logger.info(f"   Valence compounds (no core): {len(missing_core_bases)}")
+    logger.info(f"   Total compounds to process: {len(core_names) + len(missing_core_bases)}")
 
     # Step 3: Calculate rewards for each compound
-    print("\n3. Calculating rewards for each compound...")
+    logger.info("\n3. Calculating rewards for each compound...")
     sigma = 0.5
-    print(f"   Using sigma = {sigma}")
-    print(f"   Formula: (1/10000.0) * sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))")
+    logger.info(f"   Using sigma = {sigma}")
+    logger.info(f"   Formula: (1/10000.0) * sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))")
 
     # Group by compound name
     compound_groups = filtered_df.groupby('COMPOUND_NAME')
@@ -118,45 +122,45 @@ def main():
     # Create results DataFrame
     results_df = pd.DataFrame(results)
 
-    print(f"   ✓ Calculated rewards for all {n_compounds} compounds")
+    logger.info(f"   Calculated rewards for all {n_compounds} compounds")
 
     # Display unscaled statistics
-    print("\n   Unscaled reward statistics (before dividing by 10000):")
-    print(f"   Min (unscaled):  {min(unscaled_rewards):.2f}")
-    print(f"   Max (unscaled):  {max(unscaled_rewards):.2f}")
-    print(f"   Mean (unscaled): {np.mean(unscaled_rewards):.2f}")
-    print(f"   Median (unscaled): {np.median(unscaled_rewards):.2f}")
+    logger.info("\n   Unscaled reward statistics (before dividing by 10000):")
+    logger.info(f"   Min (unscaled):  {min(unscaled_rewards):.2f}")
+    logger.info(f"   Max (unscaled):  {max(unscaled_rewards):.2f}")
+    logger.info(f"   Mean (unscaled): {np.mean(unscaled_rewards):.2f}")
+    logger.info(f"   Median (unscaled): {np.median(unscaled_rewards):.2f}")
 
     # Step 4: Display statistics
-    print("\n4. Scaled Reward Statistics (÷10000):")
-    print(f"   Mean reward:   {results_df['reward_normalized'].mean():.6f}")
-    print(f"   Median reward: {results_df['reward_normalized'].median():.6f}")
-    print(f"   Min reward:    {results_df['reward_normalized'].min():.6f}")
-    print(f"   Max reward:    {results_df['reward_normalized'].max():.6f}")
-    print(f"   Std dev:       {results_df['reward_normalized'].std():.6f}")
+    logger.info("\n4. Scaled Reward Statistics (÷10000):")
+    logger.info(f"   Mean reward:   {results_df['reward_normalized'].mean():.6f}")
+    logger.info(f"   Median reward: {results_df['reward_normalized'].median():.6f}")
+    logger.info(f"   Min reward:    {results_df['reward_normalized'].min():.6f}")
+    logger.info(f"   Max reward:    {results_df['reward_normalized'].max():.6f}")
+    logger.info(f"   Std dev:       {results_df['reward_normalized'].std():.6f}")
 
     # Step 5: Show top compounds
-    print("\n5. Top 10 Compounds by Reward:")
+    logger.info("\n5. Top 10 Compounds by Reward:")
     top_compounds = results_df.nlargest(10, 'reward_normalized')
     for i, (_, row) in enumerate(top_compounds.iterrows(), 1):
-        print(f"   {i:2d}. {row['compound_name']:20s}  raw = {row['reward_raw']:10.2f}  normalized = {row['reward_normalized']:8.6f}")
+        logger.info(f"   {i:2d}. {row['compound_name']:20s}  raw = {row['reward_raw']:10.2f}  normalized = {row['reward_normalized']:8.6f}")
 
     # Step 6: Save results
-    print("\n6. Saving results...")
+    logger.info("\n6. Saving results...")
     output_file = Path(__file__).parent.parent / "doscar_rewards.csv"
 
     try:
         results_df.to_csv(output_file, index=False)
-        print(f"   ✓ Results saved to: {output_file}")
-        print(f"   ✓ Total compounds: {len(results_df)}")
+        logger.info(f"   Results saved to: {output_file}")
+        logger.info(f"   Total compounds: {len(results_df)}")
     except Exception as e:
-        print(f"❌ Error saving results: {e}")
+        logger.error(f"Error saving results: {e}")
         return 1
 
-    print("\n" + "=" * 80)
-    print("✅ REWARD CALCULATION COMPLETE!")
-    print("=" * 80)
-    print(f"\nOutput file: {output_file}")
+    logger.info("\n" + "=" * 80)
+    logger.info("REWARD CALCULATION COMPLETE!")
+    logger.info("=" * 80)
+    logger.info(f"\nOutput file: {output_file}")
 
     return 0
 

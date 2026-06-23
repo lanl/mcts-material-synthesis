@@ -2,10 +2,13 @@
 Utility functions for DOSCAR reward lookup and formula conversion.
 """
 
+import logging
 import pandas as pd
 import re
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class DoscarRewardLookup:
@@ -30,10 +33,10 @@ class DoscarRewardLookup:
             df = pd.read_csv(csv_file)
             # Create dictionary mapping compound_name -> reward_normalized
             self.rewards_dict = dict(zip(df['compound_name'], df['reward_normalized']))
-            print(f"   ✓ Loaded {len(self.rewards_dict)} DOSCAR rewards from {Path(csv_file).name}")
+            logger.info(f"   Loaded {len(self.rewards_dict)} DOSCAR rewards from {Path(csv_file).name}")
         else:
-            print(f"   ⚠ DOSCAR rewards file not found: {csv_file}")
-            print(f"   ⚠ DOSCAR rewards will be set to 0.0")
+            logger.warning(f"   DOSCAR rewards file not found: {csv_file}")
+            logger.warning(f"   DOSCAR rewards will be set to 0.0")
 
     def convert_formula_to_doscar_format(self, formula: str) -> Optional[str]:
         """
