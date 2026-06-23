@@ -386,49 +386,9 @@ def main():
             show_labels=not args.no_labels
         )
 
-        # Energy distribution plot
-        visualizer.plot_energy_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Iteration progress plot
-        visualizer.plot_iteration_progress(
-            mcts,
-            save_path=output_dir / "iteration_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull distribution plot
-        visualizer.plot_energy_above_hull_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_above_hull_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull iteration progress plot
-        visualizer.plot_energy_above_hull_progress(
-            mcts,
-            save_path=output_dir / "energy_above_hull_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Formation energy by elements plot
-        visualizer.plot_formation_energy_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "formation_energy_by_elements.png"
-        )
-
-        # Energy above hull by elements plot
-        visualizer.plot_energy_above_hull_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "energy_above_hull_by_elements.png"
-        )
+        # Skipping some auxiliary visualizations per publication configuration
+        # (energy_distribution, iteration_progress, energy_above_hull_*, formation_energy_by_elements)
+        # Only essential visualizations are generated to avoid duplicate/unused figures.
 
         # Generate reports
         analyzer.create_summary_report(

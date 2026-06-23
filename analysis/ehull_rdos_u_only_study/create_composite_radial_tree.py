@@ -162,7 +162,7 @@ def main():
     # Build networkx graph
     G = nx.DiGraph()
     for node_id, info in tree_data.items():
-        G.add_node(node_id, formula=info["formula"], composite=info["composite"])
+        G.add_node(node_id, formula=info["formula"], composite=info["composite"]) 
         if info["parent_id"] is not None:
             G.add_edge(info["parent_id"], node_id)
 

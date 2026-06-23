@@ -14,7 +14,7 @@
 set -e
 
 STUDY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${STUDY_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${STUDY_DIR}/../../" && pwd)"
 OUTPUT_DIR="${STUDY_DIR}"
 ITERATIONS=150
 TRANSITION_METAL="W"
