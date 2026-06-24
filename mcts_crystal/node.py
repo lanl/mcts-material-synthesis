@@ -109,19 +109,26 @@ class MCTSTreeNode:
         Determine possible moves for transition metals, group IV elements, and f-block elements.
 
         For transition metals: can move up, down, left, right on periodic table
-        For group IV elements: ALL elements accessible (extended mode for better exploration)
+        For group IV elements: adjacent chain only (Si <-> Ge <-> Sn <-> Pb)
         For f-block elements: extended moves (±3) for better exploration
         """
-        self.g_iv_move = [14, 32, 50, 82]  # Si, Ge, Sn, Pb
+        g_iv_chain = [14, 32, 50, 82]  # Si, Ge, Sn, Pb, in chain order
+        self.g_iv_move = g_iv_chain
         self.f_block_move = []  # Will be set based on current f-block element
 
         for atomic_num in set(self.atoms.get_atomic_numbers()):
-            if atomic_num in self.g_iv_move:
+            if atomic_num in g_iv_chain:
                 self.g_iv = atomic_num
-                # EXTENDED MODE: Allow all Group IV elements to be reached
-                # This enables exploration of Si (highest DOS potential) from any starting point
-                # OLD: Pb→Sn→Ge→Si (3 moves), NEW: Pb→Si (1 move)
-                self.g_iv_move = [14, 32, 50, 82]  # All reachable
+                # Chain-restricted: only the current element and its immediate
+                # neighbors in the Si-Ge-Sn-Pb chain (no direct jumps, e.g.
+                # Sn->Si requires passing through Ge first)
+                idx = g_iv_chain.index(atomic_num)
+                moves = [atomic_num]
+                if idx > 0:
+                    moves.append(g_iv_chain[idx - 1])
+                if idx < len(g_iv_chain) - 1:
+                    moves.append(g_iv_chain[idx + 1])
+                self.g_iv_move = sorted(moves)
             elif 22 <= atomic_num <= 30:  # 3d transition metals
                 self.metal = atomic_num
                 if atomic_num == 22:  # Ti
