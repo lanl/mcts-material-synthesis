@@ -14,11 +14,14 @@ from config.json so it stays in sync with the value used during the MCTS run.
 import sys
 import pandas as pd
 from pathlib import Path
-from ase.formula import Formula
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mcts_crystal.node import ehull_reward
 from mcts_crystal.cli import load_config
+from mcts_crystal.doscar_utils import DoscarRewardLookup
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from synthesized_compounds import SYNTHESIZED_COMPOUNDS
 
 
 def main():
@@ -55,7 +58,6 @@ def main():
         df['r_DOS'] = 0.0
         if peaks_path is not None:
             try:
-                from mcts_crystal.doscar_utils import DoscarRewardLookup
                 dos_dict = DoscarRewardLookup(peaks_file=str(peaks_path)).rewards_dict
 
                 F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
@@ -139,34 +141,61 @@ def main():
     write_report(script_dir / "all_compounds_by_composite_score.txt", df_sorted, "ALL COMPOUNDS RANKED BY COMPOSITE SCORE")
     write_report(script_dir / "top10_compounds_by_composite_score.txt", top10, "TOP 10 COMPOUNDS BY COMPOSITE SCORE")
 
-    # Check target compounds
-    target_compounds = ['V6Sn6U', 'Nb6Sn6U', 'Cr6Ge6U', 'Co6Ge6U']
-    print("\n" + "=" * 100)
-    print("TARGET COMPOUND DISCOVERY CHECK")
-    print("=" * 100)
-    for compound in target_compounds:
-        found = False
-        stored_as = None
-        if compound in df_sorted['name'].values:
-            found = True
-            stored_as = compound
-        else:
-            for formula_str in df_sorted['name'].values:
-                try:
-                    f1 = Formula(compound)
-                    f2 = Formula(formula_str)
-                    if f1.count() == f2.count():
-                        found = True
-                        stored_as = formula_str
-                        break
-                except Exception:
-                    pass
-        if found:
-            rank = df_sorted[df_sorted['name'] == stored_as].index[0] + 1
-            row = df_sorted[df_sorted['name'] == stored_as].iloc[0]
-            print(f"  {compound:12s} - Rank {rank:3d}  composite={row['composite_score']:7.4f}")
-        else:
-            print(f"  {compound:12s} - NOT DISCOVERED")
+    # --- Top 15 by Combined Reward (stability + rDOS), dash-name format ---
+    # f(rDOS) and f(E_hull) below are the same r_DOS/ehull_reward columns
+    # computed above; Total is the same composite_score (beta*ehull_reward +
+    # gamma*r_DOS, gamma loaded from config.json - NOT an unweighted sum).
+    _name_lookup = DoscarRewardLookup(peaks_file="/nonexistent.csv")  # only used for name conversion, no data needed
+    df_sorted['dash_name'] = df_sorted['name'].apply(_name_lookup.convert_formula_to_doscar_format)
+    df_sorted['dash_name'] = df_sorted['dash_name'].fillna(df_sorted['name'])
+    df_sorted['is_synthesized'] = df_sorted['dash_name'].isin(SYNTHESIZED_COMPOUNDS)
+    df_sorted['has_tc'] = df_sorted['dash_name'].str.contains(r'(?:^|-)Tc(?:-|$)', regex=True)
+
+    def write_combined_reward_table(path, ranked, title):
+        # f(rDOS) is the *weighted* contribution (gamma * r_DOS), so that
+        # f(rDOS) + f(E_hull) == Total (composite_score) exactly - consistent
+        # with f(E_hull) already being the E_hull term's contribution to Total.
+        lines = []
+        lines.append(f"   {title} (* = Priority Match):")
+        lines.append(f"   {'Rank':<6} {'Compound':<22} {'f(rDOS)':>8}  {'E_hull':>8}  {'f(E_hull)':>9}  {'Total':>8}")
+        lines.append(f"   {'----':<6} {'-'*22} {'-'*8}  {'-'*8}  {'-'*9}  {'-'*8}")
+        for i, (_, row) in enumerate(ranked.head(15).iterrows(), 1):
+            marker = '*' if row['is_synthesized'] else ' '
+            lines.append(
+                f"   {i:>3}. {marker} {row['dash_name']:<22} {row['weighted_r_DOS']:8.4f}  "
+                f"{row['e_above_hull']:8.4f}  {row['ehull_reward']:9.4f}  {row['composite_score']:8.4f}"
+            )
+        lines.append("")
+        lines.append(f"   Target compound rankings ({title}):")
+        for compound in SYNTHESIZED_COMPOUNDS:
+            match = ranked[ranked['dash_name'] == compound]
+            if match.empty:
+                lines.append(f"   -> {compound:15s}  NOT DISCOVERED")
+                continue
+            row = match.iloc[0]
+            rank = ranked.index.get_loc(match.index[0]) + 1
+            lines.append(
+                f"   -> {compound:15s}  rank={rank:3d}  f(rDOS)={row['weighted_r_DOS']:.4f}  "
+                f"f(E_hull)={row['ehull_reward']:.4f}  total={row['composite_score']:.4f}"
+            )
+
+        text = "\n".join(lines)
+        print("\n" + text)
+        with open(path, 'w') as f:
+            f.write(text + "\n")
+        print(f"\nReport saved to: {path}")
+
+    all_ranked = df_sorted.sort_values('composite_score', ascending=False).reset_index(drop=True)
+    write_combined_reward_table(
+        script_dir / "top15_combined_reward_all.txt", all_ranked,
+        "Top 15 All U-Compounds by Combined Reward"
+    )
+
+    no_tc_ranked = df_sorted[~df_sorted['has_tc']].sort_values('composite_score', ascending=False).reset_index(drop=True)
+    write_combined_reward_table(
+        script_dir / "top15_combined_reward_no_tc.txt", no_tc_ranked,
+        "Top 15 U-Compounds (excluding Tc) by Combined Reward"
+    )
 
     # Console summary
     print("\n" + "=" * 100)

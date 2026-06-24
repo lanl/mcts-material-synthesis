@@ -5,7 +5,9 @@
 # value shared by the MCTS run and all analysis/plotting scripts)
 # F-block mode: u_only (108 composition design space)
 #
-# Starting material: Pb6U1W6 (centrally located between target compounds)
+# Starting material: Cr6Sn6U (transition_metal/group_iv from config.json,
+# substituted onto the Pb6U1W6 sg191 structure below) - chosen to be centrally
+# located between the four target compounds, see note below.
 #
 # Requires (see README.md "Data Availability" for schema/how to obtain):
 #   - high_throughput_mace_results.full.csv (repo root)
@@ -13,15 +15,24 @@
 #     time from this file, there is no precomputed rewards cache
 #   - a Materials Project API key, supplied via config.json (preferred, gitignored)
 #     or the MP_API_KEY environment variable below
+#
+# selection_mode, exploration_constant, iterations, transition_metal, group_iv
+# are NOT hardcoded as CLI flags here - they come from config.json so there is
+# one source of truth for these hyperparameters across run_mcts.py and the
+# analysis/plotting scripts. See config.json/config.example.json and
+# README.md "Child Selection Methods".
+#
+# config.json currently sets transition_metal=Cr, group_iv=Sn (starting
+# material Cr6Sn6U) - chosen to minimize the worst-case graph distance to the
+# four experimentally-synthesized target compounds (U-Sn-V, U-Sn-Nb, U-Ge-Cr,
+# U-Ge-Co): distances from Cr6Sn6U are 1, 2, 1, 3 respectively (max=3), vs
+# 3, 2, 2, 5 from the original Pb6U1W6 start (max=5).
 
 set -e
 
 STUDY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${STUDY_DIR}/../../" && pwd)"
 OUTPUT_DIR="${STUDY_DIR}"
-ITERATIONS=150
-TRANSITION_METAL="W"
-GROUP_IV="Pb"
 F_BLOCK_MODE="u_only"
 
 echo "=================================================="
@@ -44,12 +55,7 @@ mkdir -p "${OUTPUT_DIR}"
 cd "${REPO_ROOT}"
 python run_mcts.py \
     --structure examples/mat_Pb6U1W6_sg191.cif \
-    --transition-metal ${TRANSITION_METAL} \
-    --group-iv ${GROUP_IV} \
     --f-block-mode ${F_BLOCK_MODE} \
-    --iterations ${ITERATIONS} \
-    --exploration-constant 0.1 \
-    --epsilon 0.1 \
     --termination-limit 25 \
     --rollout-method ehull_rdos \
     --seed 42 \

@@ -17,6 +17,10 @@ echo "Step: Generating all figures (PNG) using Python plotting pipeline"
 python generate_figures.py
 
 echo ""
+echo "Step: Generating top-compound reports"
+python generate_top10_report.py
+
+echo ""
 echo "=================================================="
 echo "ALL FIGURES GENERATED"
 echo "=================================================="

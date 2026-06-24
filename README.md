@@ -15,7 +15,7 @@ The search focuses on intermetallic compounds with transition metals, Group IV e
 
 ## Key Features
 
-- **Intelligent exploration** of chemical space using MCTS with UCB-based selection
+- **Intelligent exploration** of chemical space using MCTS, with a choice of five child-selection strategies (`ucb1`, `epsilon_greedy`, `boltzmann`, `puct`, `hybrid`) via `--selection-mode`
 - **Three rollout methods** (`ehull`, `ehull_rdos`, `rdos`) for stability- and/or electronic-structure-guided search
 - **Flexible f-block substitution modes** (U-only, full f-block, experimental, lanthanides+U, or extended lanthanides+U)
 - **High-throughput energy calculations** using cached MACE results
@@ -53,8 +53,8 @@ cd mcts_materials
 2. Get a Materials Project API key (if using energy above hull):
    - Register at https://materialsproject.org/
    - Navigate to your dashboard and copy your API key
-   - **Note**: API key is only required for rollout methods: `eh`, `both`, or `weighted`
-   - Not needed for `rollout-method='fe'` (formation energy only)
+   - **Note**: API key is required for rollout methods `ehull` and `ehull_rdos`
+   - Not needed for `--rollout-method rdos` (rDOS only)
 
 ## Usage
 
@@ -96,7 +96,7 @@ python run_mcts.py --iterations 1000 --rollout-method rdos
 python run_mcts.py --iterations 1000 --f-block-mode full_f_block --rollout-method ehull_rdos
 ```
 
-To reproduce the published U-only `ehull_rdos` study and its figures end to end, see [examples/ehull_rdos_u_only_study/](examples/ehull_rdos_u_only_study/run_study.sh).
+To reproduce the published U-only `ehull_rdos` study and its figures end to end, see [analysis/ehull_rdos_u_only_study/](analysis/ehull_rdos_u_only_study/run_study.sh).
 
 ## Hyperparameters
 
@@ -116,7 +116,10 @@ To reproduce the published U-only `ehull_rdos` study and its figures end to end,
 | `--beta` | 1.0 | float | Weight for the E_hull reward in `ehull_rdos` |
 | `--gamma` | 0.0001 | float | Weight for the rDOS reward in `ehull_rdos` |
 | `--mp-api-key` | None | string | Materials Project API key (required for `ehull`, `ehull_rdos`; prefer `config.json`) |
-| `--exploration-constant` | 0.1 | float | UCB exploration constant (higher = more exploration vs exploitation) |
+| `--exploration-constant` | 0.1 | float | UCB1/PUCT exploration constant `c` (higher = more exploration vs exploitation) |
+| `--selection-mode` | `ucb1` | `ucb1`, `epsilon_greedy`, `boltzmann`, `puct`, `hybrid` | Child-selection strategy for the selection phase - see [Child Selection Methods](#child-selection-methods) |
+| `--epsilon` | 0.2 | float | Exploration rate, used by `epsilon_greedy`/`hybrid` selection modes only |
+| `--temperature` | 1.0 | float | Softmax temperature, used by `boltzmann` selection mode only |
 | `--f-block-mode` | `u_only` | `u_only`, `full_f_block`, `experimental`, `lanthanides_u`, `lanthanides_u_extended` | F-block element substitution strategy |
 | `--transition-metal` | None | element symbol | Override the transition metal in the starting structure |
 | `--group-iv` | None | element symbol | Override the Group IV element in the starting structure |
@@ -181,8 +184,8 @@ The Materials Project API is used to calculate **energy above hull**, which meas
 
 - `--rollout-depth`: 1 (depth of random substitutions during rollout)
 - `--n-rollout`: 5 (number of rollout simulations per expansion)
-- `--epsilon`: 0.2 (ε-greedy selection rate)
-- `selection_mode`: `'epsilon'` (fixed)
+
+See [Child Selection Methods](#child-selection-methods) for `--selection-mode`, `--epsilon`, and `--temperature`.
 
 ## Data Availability
 
@@ -276,7 +279,8 @@ mcts_materials/
 ├── tests/                          # pytest suite (mocks MACE/Materials Project; no [full] install needed)
 ├── .github/workflows/tests.yml     # CI: runs the test suite on push/PR
 ├── examples/
-│   ├── mat_Pb6U1W6_sg191.cif      # Default starting structure
+│   └── mat_Pb6U1W6_sg191.cif      # Default starting structure
+├── analysis/
 │   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures
 ├── high_throughput_mace_results.full.csv  # NOT bundled - see Data Availability
 └── doscar_peaks_data_with_U.csv            # NOT bundled - see Data Availability
@@ -284,11 +288,10 @@ mcts_materials/
 
 ## Reproducing the Published Study
 
-`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 0.0001`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
+`analysis/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (U-only f-block mode; `--rollout-method ehull_rdos`, plus `iterations`/`selection_mode`/`exploration_constant`/`beta`/`gamma`/`transition_metal`/`group_iv` all read from `config.json` rather than hardcoded in the script - see `config.json`/`config.example.json` for current values):
 
 - `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
-- `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, SG191 comparison, convergence plot, composite-colored radial tree) from the run's output
-- Individual `prepare_*.py` / `plot_*.gnuplot` pairs for each figure, plus `generate_top10_report.py` for the ranked compound list
+- `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, convergence plot, composite-colored radial tree) via `generate_figures.py`, plus `generate_top10_report.py` for the ranked compound list
 
 This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
 
@@ -296,9 +299,7 @@ This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_wit
 
 ### MCTS Loop
 
-1. **Selection Phase**: Start at root, traverse tree selecting children with highest UCB values
-   - UCB = (total_reward / visits) + c × √(ln(parent_visits) / visits)
-   - Balances exploitation (high reward) and exploration (low visits)
+1. **Selection Phase**: Start at root, traverse tree picking one child at each level according to `--selection-mode` (default `ucb1`) - see [Child Selection Methods](#child-selection-methods)
 
 2. **Expansion Phase**: When reaching a leaf node, create child nodes by:
    - Substituting transition metals (move ±1 period or ±1 group)
@@ -320,6 +321,32 @@ This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_wit
 Search terminates when:
 - All iterations completed, OR
 - All leaf nodes marked as terminated (visited `--termination-limit` times without improvement, default 60)
+
+### Child Selection Methods
+
+`--selection-mode` controls how a child is picked at each level of the tree during the selection phase. In all modes, `N` is a node's visit count, `Q` is its mean reward (`total_reward / N`), and a terminated child is never selected. `c` is `--exploration-constant`.
+
+- **`ucb1` (default)**: Classic UCB1 - deterministic, always picks the child maximizing
+  ```
+  UCB1 = Q + c * sqrt(ln(N_parent) / N)
+  ```
+  An unvisited child (`N=0`) has `UCB1 = +inf`, so unvisited children are always tried before any visited one. This is the standard MCTS/UCT selection rule: there is no extra randomization beyond what the formula itself provides - the exploration/exploitation tradeoff comes entirely from how the bonus term shrinks as `N` grows.
+
+- **`epsilon_greedy`**: Textbook epsilon-greedy. With probability `1 - epsilon`, picks `argmax(UCB1)` (identical to `ucb1`); with probability `epsilon` (`--epsilon`, default 0.2), picks a child **uniformly at random**, ignoring UCB1 value entirely.
+
+- **`boltzmann`**: Softmax/Boltzmann exploration. Always stochastic - picks child `i` with probability
+  ```
+  P(i) ∝ exp(UCB1_i / T)
+  ```
+  where `T` is `--temperature` (default 1.0). Lower `T` biases toward greedy `argmax`; higher `T` biases toward uniform random. Unvisited children (`UCB1 = +inf`) are still always explored first.
+
+- **`puct`**: AlphaZero-style PUCT (Predictor + UCB applied to Trees) - deterministic, always picks the child maximizing
+  ```
+  PUCT = Q + c * P(i) * sqrt(N_parent) / (1 + N)
+  ```
+  Since this codebase has no learned policy network to predict `P(i)`, a uniform prior `P(i) = 1 / num_children` is used instead. Unlike `ucb1`, an unvisited child has `Q = 0` rather than `+inf` - its exploration bonus is largest when `N=0` (via the `1/(1+N)` term), which is what drives initial exploration instead of an infinite sentinel value.
+
+- **`hybrid`**: This codebase's original default (previously the hardcoded, unnamed behavior before `--selection-mode` existed). An epsilon-greedy outer loop like `epsilon_greedy`, but the exploratory branch (probability `epsilon`) draws from a roulette wheel weighted by **UCB1-squared** rather than picking uniformly - a child with twice the UCB1 of another gets four times the selection probability in that branch. This is not a standard technique from the MCTS literature; it's kept for backward compatibility and comparison against the four methods above.
 
 ## Tips for Effective Use
 

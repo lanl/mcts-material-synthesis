@@ -38,13 +38,16 @@ class MCTS:
     Monte Carlo Tree Search algorithm for crystal structure optimization.
     """
     
-    def __init__(self, root: MCTSTreeNode, epsilon: float = 0.2):
+    def __init__(self, root: MCTSTreeNode, epsilon: float = 0.2, temperature: float = 1.0):
         """
         Initialize MCTS algorithm.
 
         Args:
             root: Root node of the MCTS tree
-            epsilon: Exploration rate for epsilon-greedy selection (default: 0.2)
+            epsilon: Exploration rate for epsilon-greedy/hybrid selection (default: 0.2)
+            temperature: Temperature for 'boltzmann' selection mode (default: 1.0).
+                Higher = more uniform/exploratory, lower = closer to greedy argmax.
+                Unused by the other selection modes.
         """
         self.root = root
         self.origin_root = root
@@ -55,6 +58,7 @@ class MCTS:
         self.best_node: Optional[MCTSTreeNode] = None
         self.terminated = False
         self.epsilon = epsilon
+        self.temperature = temperature
 
         # Track node with best E_form and its properties
         self.best_e_form_node: Optional[MCTSTreeNode] = None
@@ -79,52 +83,78 @@ class MCTS:
         # Track number of unique compounds discovered
         self.n_unique_compounds_history = []
         
-    def select_node(self, mode: str = 'epsilon') -> List[MCTSTreeNode]:
+    def select_node(self, mode: str = 'ucb1') -> List[MCTSTreeNode]:
         """
-        Node selection algorithm using UCB.
-        
+        Node selection algorithm: walk from the root to a leaf, picking one
+        child at each level according to `mode`.
+
         Args:
-            mode: Selection mode ('epsilon', 'probability', 'probability_inverse', 'inverse')
-            
+            mode: Child-selection strategy. One of:
+                - 'ucb1' (default): Classic UCB1 - always pick the child with
+                  the highest UCB1 = Q/N + c*sqrt(ln(N_parent)/N). Deterministic;
+                  the exploration/exploitation tradeoff comes entirely from the
+                  formula itself, with no extra randomization layered on top.
+                - 'epsilon_greedy': Textbook epsilon-greedy - argmax(UCB1) with
+                  probability (1 - epsilon); with probability epsilon, pick a
+                  child uniformly at random (ignoring UCB1 magnitude).
+                - 'boltzmann': Stochastic at every step - P(child) is
+                  proportional to exp(UCB1 / temperature) (softmax exploration).
+                - 'puct': AlphaZero-style PUCT = Q + c*prior*sqrt(N_parent)/(1+N),
+                  with a uniform prior (1/num_children) since there is no
+                  learned policy network here. Deterministic argmax, like
+                  'ucb1', but an unvisited child has Q=0 rather than +inf.
+                - 'hybrid': This codebase's original default (previously named
+                  'epsilon') - an epsilon-greedy outer loop, but the
+                  exploratory branch draws from a roulette wheel weighted by
+                  UCB1-squared rather than picking uniformly. Not a standard
+                  textbook method; kept for backward compatibility/comparison.
+
         Returns:
             List of selected nodes for back-propagation
         """
         select_chain = [self.root]
         current = self.root
-        
+
         while not current.expandable:
-            ucb_values = []
-            
+            n_children = len(current.children)
+            prior = 1.0 / n_children if n_children > 0 else 0.0
+
+            scores = []
             for child_node in current.children:
                 if child_node.terminated:
-                    ucb_values.append(-1e4)
+                    scores.append(-1e4)
                     if child_node.get_chemical_formula() in self.stat_dict:
                         self.stat_dict[child_node.get_chemical_formula()][2] = True
+                elif mode == 'puct':
+                    scores.append(child_node.get_puct(prior))
                 else:
-                    ucb_values.append(child_node.get_ucb())
-            
+                    scores.append(child_node.get_ucb())
+
             # Check if all children are terminated
-            if set(ucb_values) == {-1e4}:
+            if set(scores) == {-1e4}:
                 self.terminated = True
                 break
-                
+
             # Select next node based on mode
-            if mode == 'epsilon':
+            if mode in ('ucb1', 'puct'):
+                current = current.children[np.argmax(scores)]
+            elif mode == 'epsilon_greedy':
                 if random.random() < self.epsilon:
-                    current = current.children[self._probability_selector(ucb_values)]
+                    current = current.children[self._uniform_selector(scores)]
                 else:
-                    current = current.children[np.argmax(ucb_values)]
-            elif mode == 'probability':
-                current = current.children[self._probability_selector(ucb_values)]
-            elif mode == 'probability_inverse':
-                current = current.children[self._probability_selector(1 - np.array(ucb_values))]
-            elif mode == 'inverse':
-                current = current.children[np.argmin(np.abs(ucb_values))]
+                    current = current.children[np.argmax(scores)]
+            elif mode == 'boltzmann':
+                current = current.children[self._boltzmann_selector(scores)]
+            elif mode == 'hybrid':
+                if random.random() < self.epsilon:
+                    current = current.children[self._probability_selector(scores)]
+                else:
+                    current = current.children[np.argmax(scores)]
             else:
                 raise ValueError(f"Unknown selection mode: {mode}")
-                
+
             select_chain.append(current)
-            
+
         self.current_node = current
         return select_chain
         
@@ -337,15 +367,63 @@ class MCTS:
                 
         weights = np.cumsum(np.square(ucb_processed))
         random_value = random.random() * weights[-1]
-        
+
         for i, weight in enumerate(weights):
             if weight > random_value:
                 return i
         return len(weights) - 1
-        
+
+    def _uniform_selector(self, scores: List[float]) -> int:
+        """
+        Select an index uniformly at random, ignoring score magnitude entirely
+        (the exploratory step of textbook epsilon-greedy). Terminated children
+        (sentinel score -1e4) are excluded so exploration doesn't waste rollouts
+        on dead branches.
+
+        Args:
+            scores: List of per-child scores (UCB1 values, with -1e4 for
+                terminated children)
+
+        Returns:
+            Selected index
+        """
+        candidates = [i for i, s in enumerate(scores) if s != -1e4]
+        if not candidates:
+            candidates = list(range(len(scores)))
+        return random.choice(candidates)
+
+    def _boltzmann_selector(self, scores: List[float]) -> int:
+        """
+        Select an index with probability proportional to exp(score / temperature)
+        (softmax/Boltzmann exploration). Lower temperature biases toward greedy
+        argmax; higher temperature biases toward uniform random.
+
+        Args:
+            scores: List of per-child UCB1 values (with -1e4 for terminated
+                children, and possibly +inf for never-visited children)
+
+        Returns:
+            Selected index
+        """
+        arr = np.array(scores, dtype=float)
+
+        # Never-visited children have UCB1 = +inf; always explore one of
+        # those before weighing finite values via softmax.
+        inf_mask = np.isinf(arr) & (arr > 0)
+        if inf_mask.any():
+            candidates = np.flatnonzero(inf_mask)
+            return int(np.random.choice(candidates))
+
+        scaled = arr / self.temperature
+        scaled -= scaled.max()  # numerical stability; doesn't change the softmax result
+        weights = np.exp(scaled)
+        probs = weights / weights.sum()
+        return int(np.random.choice(len(arr), p=probs))
+
+
     def run(self, n_iterations: int, energy_calculator=None,
             rollout_depth: int = 1, n_rollout: int = 10,
-            selection_mode: str = 'epsilon', rollout_method: str = 'ehull',
+            selection_mode: str = 'ucb1', rollout_method: str = 'ehull',
             beta: float = 1.0, gamma: float = 0.0001,
             doscar_lookup=None, n_workers: int = 1) -> Dict:
         """
@@ -356,7 +434,9 @@ class MCTS:
             energy_calculator: Energy calculator instance
             rollout_depth: Depth of rollout simulations
             n_rollout: Number of rollout simulations per expansion
-            selection_mode: Node selection mode
+            selection_mode: Child-selection strategy for the selection phase.
+                One of 'ucb1' (default), 'epsilon_greedy', 'boltzmann', 'puct',
+                or 'hybrid'. See select_node() for details on each.
             rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
             gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)

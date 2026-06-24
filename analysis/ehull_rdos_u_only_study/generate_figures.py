@@ -30,6 +30,9 @@ import shutil
 import re
 import json
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from synthesized_compounds import SYNTHESIZED_COMPOUNDS
+
 DEFAULT_GAMMA = 0.0001
 
 
@@ -355,8 +358,8 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
     else:
         df_u['name_norm'] = df_u.get('formula', '').apply(_norm)
 
-    # synthesized names (successful)
-    synthesized_names = ['U-Sn-V', 'U-Sn-Nb', 'U-Ge-Cr', 'U-Ge-Co']
+    # synthesized names (successful) - see synthesized_compounds.py
+    synthesized_names = SYNTHESIZED_COMPOUNDS
     import re
     def elem_set(name):
         if pd.isna(name):
@@ -455,8 +458,8 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
                 return -_np.tanh(120.0 * (x - 0.05))
         top15['ehull_reward'] = top15['e_above_hull'].apply(ehull_reward)
 
-    # synthesized detection by element sets
-    synthesized_names = ['U-Sn-V', 'U-Sn-Nb', 'U-Ge-Cr', 'U-Ge-Co']
+    # synthesized detection by element sets - see synthesized_compounds.py
+    synthesized_names = SYNTHESIZED_COMPOUNDS
     import re
     def elem_set(name):
         if pd.isna(name):
