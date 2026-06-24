@@ -23,6 +23,8 @@ Examples:
     python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_peaks_data_with_U.csv, no MACE/MP needed)
     python run_mcts.py --f-block-mode lanthanides_u_extended  # Lanthanides + U, extended moves
     python run_mcts.py --exploration-constant 0.2          # Higher exploration (default: 0.1)
+    python run_mcts.py --selection-mode boltzmann --temperature 0.5  # Softmax exploration instead of classic UCB1
+    python run_mcts.py --selection-mode epsilon_greedy --epsilon 0.2  # argmax UCB1, uniform-random epsilon fraction of the time
     python run_mcts.py --no-labels                         # Turn off labels on radial tree visualization
     python run_mcts.py --iterations 200 --structure my_structure.cif --rollout-method ehull
 """
@@ -151,8 +153,19 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Weight for the rDOS reward when using ehull_rdos (default: 0.0001)')
     parser.add_argument('--termination-limit', type=int, default=60,
                        help='Number of visits before terminating a node without improvement (default: 60)')
+    parser.add_argument('--selection-mode', type=str, default='ucb1',
+                       choices=['ucb1', 'epsilon_greedy', 'boltzmann', 'puct', 'hybrid'],
+                       help='Child-selection strategy for the MCTS selection phase: '
+                            'ucb1 (default; classic UCB1, deterministic argmax of Q/N + c*sqrt(ln(N_parent)/N)), '
+                            'epsilon_greedy (argmax UCB1, but pick uniformly at random with probability --epsilon), '
+                            'boltzmann (stochastic; P(child) proportional to exp(UCB1 / --temperature)), '
+                            'puct (AlphaZero-style Q + c*prior*sqrt(N_parent)/(1+N) with a uniform prior, since there is no learned policy network), '
+                            'hybrid (this codebase\'s original default before --selection-mode existed: epsilon-greedy outer loop, '
+                            'but the exploratory draw is weighted by UCB1-squared rather than uniform).')
     parser.add_argument('--epsilon', '-e', type=float, default=0.2,
-                       help='Exploration rate for epsilon-greedy selection (default: 0.2, range: 0.0-1.0)')
+                       help='Exploration rate for epsilon_greedy/hybrid selection modes (default: 0.2, range: 0.0-1.0). Unused by ucb1/boltzmann/puct.')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                       help='Temperature for the boltzmann selection mode (default: 1.0). Higher = more uniform/exploratory, lower = closer to greedy argmax. Unused by other selection modes.')
     parser.add_argument('--rollout-depth', type=int, default=1,
                        help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
     parser.add_argument('--n-rollout', type=int, default=5,
@@ -287,14 +300,18 @@ def main():
         root_node.e_form = root_e_form
         root_node.e_above_hull = root_e_hull
 
-        mcts = MCTS(root_node, epsilon=args.epsilon)
+        mcts = MCTS(root_node, epsilon=args.epsilon, temperature=args.temperature)
 
         logger.info(f"   Root compound: {root_node.get_chemical_formula()}")
         logger.info(f"   Root E_form: {root_e_form:.4f} eV/atom")
         logger.info(f"   Root E_hull: {root_e_hull:.4f} eV/atom")
         logger.info(f"   F-block mode: {args.f_block_mode}")
         logger.info(f"   Exploration constant: {args.exploration_constant}")
-        logger.info(f"   Epsilon (exploration rate): {args.epsilon}")
+        logger.info(f"   Selection mode: {args.selection_mode}")
+        if args.selection_mode in ('epsilon_greedy', 'hybrid'):
+            logger.info(f"   Epsilon (exploration rate): {args.epsilon}")
+        if args.selection_mode == 'boltzmann':
+            logger.info(f"   Temperature: {args.temperature}")
         logger.info(f"   Termination limit: {args.termination_limit}")
 
         # Show search space
@@ -330,7 +347,7 @@ def main():
             energy_calculator=energy_calc,
             rollout_depth=args.rollout_depth,
             n_rollout=args.n_rollout,
-            selection_mode='epsilon',
+            selection_mode=args.selection_mode,
             rollout_method=args.rollout_method,
             beta=args.beta,
             gamma=args.gamma,

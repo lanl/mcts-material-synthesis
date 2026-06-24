@@ -3,5 +3,8 @@
   "rollout_method": "ehull",
   "iterations": 1000,
   "beta": 1.0,
-  "gamma": 0.0001
+  "gamma": 0.0001,
+  "selection_mode": "ucb1",
+  "epsilon": 0.2,
+  "temperature": 1.0
 }

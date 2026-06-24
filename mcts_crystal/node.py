@@ -421,9 +421,31 @@ class MCTSTreeNode:
         
         exploitation = self.total_reward / self.t_of_visit
         exploration = self.exploration_constant * np.sqrt(np.log(self.parent.t_of_visit) / self.t_of_visit)
-        
+
         return exploitation + exploration
-        
+
+    def get_puct(self, prior: float) -> float:
+        """
+        Calculate the PUCT (Predictor + UCB applied to Trees) value for this node,
+        AlphaZero-style. Unlike get_ucb(), an unvisited node has Q=0 rather than
+        +inf - exploration is driven entirely by the (1 + N) term in the
+        denominator, which is largest when N=0.
+
+        Since this codebase has no learned policy network, `prior` is a uniform
+        prior (1 / number of siblings) rather than a predicted move probability.
+
+        Args:
+            prior: Prior probability assigned to this node (uniform, since there
+                is no policy network to predict one)
+
+        Returns:
+            PUCT value
+        """
+        q = self.total_reward / self.t_of_visit if self.t_of_visit > 0 else 0.0
+        exploration = self.exploration_constant * prior * np.sqrt(self.parent.t_of_visit) / (1 + self.t_of_visit)
+
+        return q + exploration
+
     def visit(self, renew_t_to_terminate: bool = False):
         """
         Update visit count and termination countdown.

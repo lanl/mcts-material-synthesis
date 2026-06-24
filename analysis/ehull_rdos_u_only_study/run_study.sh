@@ -13,6 +13,9 @@
 #     time from this file, there is no precomputed rewards cache
 #   - a Materials Project API key, supplied via config.json (preferred, gitignored)
 #     or the MP_API_KEY environment variable below
+#
+# Uses the CLI's default --selection-mode (ucb1, classic UCB1) - see
+# README.md "Child Selection Methods" for the other available modes.
 
 set -e
 
@@ -49,7 +52,6 @@ python run_mcts.py \
     --f-block-mode ${F_BLOCK_MODE} \
     --iterations ${ITERATIONS} \
     --exploration-constant 0.1 \
-    --epsilon 0.1 \
     --termination-limit 25 \
     --rollout-method ehull_rdos \
     --seed 42 \
