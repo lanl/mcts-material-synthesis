@@ -66,7 +66,6 @@ else:
                     v = float(val)
                 except Exception:
                     continue
-                v = max(0.0, min(1.0, v))
                 elems = parse_elems(name)
                 key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
                 if not key:
@@ -85,7 +84,11 @@ else:
 if 'e_above_hull' not in df.columns:
     df['e_above_hull'] = df.get('e_hull', 0.0)
 
-beta=1.0; gamma=2.5
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from mcts_crystal.cli import load_config
+_config = load_config(str(Path(__file__).resolve().parents[2] / 'config.json'))
+beta = float(_config.get('beta', 1.0))
+gamma = float(_config.get('gamma', 0.0001))
 
 print('Computing composite scores')
 df['ehull_reward'] = df['e_above_hull'].apply(ehull_reward)

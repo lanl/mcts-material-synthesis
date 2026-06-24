@@ -27,9 +27,32 @@ import subprocess
 import sys
 import shutil
 import re
+import json
+
+DEFAULT_GAMMA = 0.0001
 
 
-def compute_composite(df, beta=1.0, gamma=1.0):
+def load_gamma(default: float = DEFAULT_GAMMA) -> float:
+    """Load the single gamma (rDOS weight) from config.json, if present.
+
+    gamma is used both as the composite-score weight (beta*ehull_reward + gamma*r_DOS)
+    and to scale r_DOS for plot overlays - there is only one gamma value, not a
+    separate "gamma_prefactor" for plots.
+    """
+    config_path = Path(__file__).resolve().parents[2] / 'config.json'
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            return float(config.get('gamma', default))
+        except Exception:
+            pass
+    return default
+
+
+def compute_composite(df, beta=1.0, gamma=None):
+    if gamma is None:
+        gamma = load_gamma()
     try:
         from mcts_crystal.node import ehull_reward
     except Exception:
@@ -90,16 +113,25 @@ def load_master_mace(repo_root: Path):
     """Load canonical high-throughput MACE CSV and DOS rewards (if present).
     Returns (df_mace, dos_by_key) where dos_by_key maps element-set keys to reward.
     """
-    # Search for canonical files within repo_root and a few parent levels (cover sibling folders)
+    # Prefer the file in this repo; only search parent/sibling folders as a fallback
+    # (this repo may sit next to other mcts_materials checkouts with stale copies).
     MAX_PARENT_DEPTH = 4
     search_roots = [repo_root] + list(repo_root.parents)[:MAX_PARENT_DEPTH]
-    mace_candidates = []
-    for r in search_roots:
-        try:
-            mace_candidates.extend(list(Path(r).rglob('high_throughput_mace_results.full.csv')))
-        except OSError:
-            continue
-    mace_csv = mace_candidates[0] if mace_candidates else (repo_root / 'high_throughput_mace_results.full.csv')
+
+    def find_canonical(filename):
+        local = repo_root / filename
+        if local.exists():
+            return local
+        for r in search_roots:
+            try:
+                candidates = list(Path(r).rglob(filename))
+            except OSError:
+                continue
+            if candidates:
+                return candidates[0]
+        return repo_root / filename
+
+    mace_csv = find_canonical('high_throughput_mace_results.full.csv')
     df_mace = None
     dos_by_key = {}
     if mace_csv.exists():
@@ -108,14 +140,8 @@ def load_master_mace(repo_root: Path):
         except Exception:
             df_mace = None
 
-    # Load doscar rewards if available (search parents/siblings)
-    dos_candidates = []
-    for r in search_roots:
-        try:
-            dos_candidates.extend(list(Path(r).rglob('doscar_rewards.csv')))
-        except OSError:
-            continue
-    doscar_csv = dos_candidates[0] if dos_candidates else (repo_root / 'doscar_rewards.csv')
+    # Load doscar rewards if available (prefer local repo copy)
+    doscar_csv = find_canonical('doscar_rewards.csv')
     df_dos = None
     if doscar_csv.exists():
         try:
@@ -148,8 +174,6 @@ def load_master_mace(repo_root: Path):
                 v = float(val)
             except Exception:
                 continue
-            # clamp normalized rewards to [0,1]
-            v = max(0.0, min(1.0, v))
             elems = parse_elems(name)
             key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
             if not key:
@@ -166,29 +190,30 @@ def plot_top10(df_sorted, out_dir: Path):
     fig, ax = plt.subplots(figsize=(4, 4))
     ranks = np.arange(1, len(top10) + 1)
     ehull_vals = top10['ehull_reward'].values
-    # Use raw r_DOS for visualization (do not apply gamma scaling here)
-    rdos_vals = top10['r_DOS'].values
+    # Plot gamma * r_DOS (the actual composite-score component), not raw r_DOS
+    rdos_vals = top10['weighted_r_DOS'].values
 
-    ax.barh(ranks, ehull_vals, color="#ff7f0e", edgecolor='k')
-    ax.barh(ranks, rdos_vals, left=ehull_vals, color="#2ca02c", edgecolor='k')
+    ax.barh(ranks, ehull_vals, color="#ff7f0e", edgecolor='k', label=r"$r_{E_{\mathrm{Hull}}}$")
+    ax.barh(ranks, rdos_vals, left=ehull_vals, color="#2ca02c", edgecolor='k', label=r"$\gamma \cdot r_{\mathrm{DOS}}$")
     ax.set_yticks(ranks)
     ax.set_yticklabels(top10['name'].values)
     ax.invert_yaxis()
     ax.set_xlabel('Composite components')
+    ax.legend(fontsize=8)
     plt.tight_layout()
     out = out_dir / 'top10_by_composite.png'
     fig.savefig(out, dpi=300)
     plt.close(fig)
 
-    # Grouped vertical bars: E_hull and 2.5*r_DOS
+    # Grouped vertical bars: E_hull and gamma * r_DOS
     fig, ax = plt.subplots(figsize=(4, 4))
     x = np.arange(len(top10))
     width = 0.35
     ax.bar(x - width/2, top10['e_above_hull'].values, width, label='E_hull', color="#ff7f0e")
-    ax.bar(x + width/2, top10['r_DOS'].values, width, label='r_DOS', color="#2ca02c")
+    ax.bar(x + width/2, top10['weighted_r_DOS'].values, width, label=r"$\gamma \cdot r_{\mathrm{DOS}}$", color="#2ca02c")
     ax.set_xticks(x)
     ax.set_xticklabels(top10['name'].values, rotation=45, ha='right')
-    ax.set_ylabel('E_hull / r_DOS')
+    ax.set_ylabel(r"E_hull / $\gamma \cdot r_{\mathrm{DOS}}$")
     ax.legend()
     plt.tight_layout()
     out = out_dir / 'top10_ehull_rdos_bars.png'
@@ -197,17 +222,26 @@ def plot_top10(df_sorted, out_dir: Path):
 
 
 def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
+    # Prefer the canonical files in *this* repo over same-named files that may exist in
+    # sibling/parent checkouts (e.g. a neighboring mcts_materials clone with stale data).
+    this_repo_root = Path(__file__).resolve().parents[2]
+
+    def find_canonical(filename):
+        local = this_repo_root / filename
+        if local.exists():
+            return local
+        candidates = list(repo_root.rglob(filename))
+        return candidates[0] if candidates else local
+
     # Prefer using a canonical high-throughput CSV of the full design-space (if available).
     # This ensures the "All Compounds" backdrop contains the full U-containing set (~108).
-    # Search the repo for `high_throughput_mace_results.full.csv` and prefer it; otherwise
-    # fall back to the analysis composite CSV.
-    mace_candidates = list(repo_root.rglob('high_throughput_mace_results.full.csv'))
-    mace_csv = mace_candidates[0] if mace_candidates else (repo_root / 'high_throughput_mace_results.full.csv')
+    mace_csv = find_canonical('high_throughput_mace_results.full.csv')
 
     comp_csv = out_dir / 'all_compounds_by_composite_score.csv'
     df_u = None
-    # gamma prefactor to experiment with composite weighting on overlays
-    gamma_prefactor = 0.25
+    # x-axis for this plot is gamma * r_DOS (the actual composite-score component),
+    # applied consistently to the backdrop and every overlay below.
+    gamma = load_gamma()
 
     if mace_csv.exists():
         try:
@@ -216,8 +250,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
             df_mace = None
 
         # Attempt to attach r_DOS via any doscar rewards file if present
-        dos_candidates = list(repo_root.rglob('doscar_rewards.csv'))
-        doscar_csv = dos_candidates[0] if dos_candidates else (repo_root / 'doscar_rewards.csv')
+        doscar_csv = find_canonical('doscar_rewards.csv')
 
         df_dos = None
         if doscar_csv.exists():
@@ -330,8 +363,8 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
             df_exp = None
 
     fig, ax = plt.subplots(figsize=(4, 4))
-    # Use r_dos (already present) or fall back to r_DOS column
-    rdos_vals = df_u.get('r_dos', df_u.get('r_DOS', pd.Series(0.0))).astype(float)
+    # Use r_dos (already present) or fall back to r_DOS column; plot gamma * r_DOS
+    rdos_vals = df_u.get('r_dos', df_u.get('r_DOS', pd.Series(0.0))).astype(float) * gamma
     ax.scatter(rdos_vals, df_u['e_above_hull'].astype(float), s=6, color='#D0D0D0', label='All Compounds (U-containing)')
 
     # Normalize helper
@@ -371,7 +404,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
             nrm = r['name_norm']
             if nrm in name_map:
                 row = name_map[nrm]
-                x = float(row.get('r_dos', row.get('r_DOS', 0.0))) * gamma_prefactor
+                x = float(row.get('r_dos', row.get('r_DOS', 0.0))) * gamma
                 y = float(row.get('e_above_hull', r['e_hull']))
                 # classify by element set equality
                 if any(elem_set(r['name']) == s for s in synth_sets):
@@ -397,14 +430,14 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
             name = row['name'] if 'name' in row else row.get('formula')
             if name in mace_lookup:
                 e_hull, rdos = mace_lookup[name]
-                xs.append(float(rdos) * gamma_prefactor)
+                xs.append(float(rdos) * gamma)
                 ys.append(e_hull)
         if xs:
             ax.scatter(xs, ys, s=80, color='#5BC0EB', marker='^', edgecolors='#5BC0EB', label='Top 10 (MCTS)')
 
     # (Top10 plotting handled earlier to control marker style)
 
-    ax.set_xlabel(r"$r_{\mathrm{DOS}}$")
+    ax.set_xlabel(r"$\gamma \cdot r_{\mathrm{DOS}}$" + f" (γ={gamma:g})")
     ax.set_ylabel(r"$E_{\mathrm{Hull}}$ (eV/atom)")
     ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
     # Create a clean legend with specific marker styles so Top10 appears as a triangle
@@ -430,9 +463,12 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
     tables_dir = out_dir / 'tables'
     tables_dir.mkdir(parents=True, exist_ok=True)
     top15 = df_sorted.head(15).copy()
+    gamma = load_gamma()
     # ensure columns exist
     if 'r_DOS' not in top15.columns and 'dos_reward' in top15.columns:
         top15['r_DOS'] = top15['dos_reward']
+    if 'weighted_r_DOS' not in top15.columns:
+        top15['weighted_r_DOS'] = top15['r_DOS'] * gamma
     if 'ehull_reward' not in top15.columns and 'e_above_hull' in top15.columns:
         # recompute if possible
         try:
@@ -461,7 +497,7 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
     rows = []
     for _, r in top15.iterrows():
         name = r.get('name', r.get('formula', ''))
-        rdos = float(r.get('r_DOS', 0.0)) if pd.notna(r.get('r_DOS', None)) else 0.0
+        rdos = float(r.get('weighted_r_DOS', 0.0)) if pd.notna(r.get('weighted_r_DOS', None)) else 0.0
         ehull_r = float(r.get('ehull_reward', 0.0)) if pd.notna(r.get('ehull_reward', None)) else 0.0
         comp = float(r.get('composite_score', 0.0)) if pd.notna(r.get('composite_score', None)) else 0.0
         ehull = float(r.get('e_above_hull', np.nan)) if pd.notna(r.get('e_above_hull', None)) else np.nan
@@ -470,10 +506,10 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
 
     tex_path = tables_dir / 'top15_u_only.tex'
     with open(tex_path, 'w') as f:
-        f.write('% Top 15 compounds (U-only study)\n')
+        f.write(f'% Top 15 compounds (U-only study). gamma={gamma:g}\n')
         f.write('\\begin{tabular}{lrrrrc}\n')
         f.write('\\toprule\n')
-        f.write('Name & r\\_DOS & $r_{E_{\\mathrm{Hull}}}$ & Composite & E\\_hull & Synth \\\\n')
+        f.write(f'Name & $\\gamma \\cdot r_{{\\mathrm{{DOS}}}}$ ($\\gamma$={gamma:g}) & $r_{{E_{{\\mathrm{{Hull}}}}}}$ & Composite & E\\_hull & Synth \\\\n')
         f.write('\\midrule\n')
         for name, rdos, ehull_r, comp, ehull, synth in rows:
             f.write(f"{name} & {rdos:.4f} & {ehull_r:.4f} & {comp:.4f} & {ehull:.4f} & {synth} \\\\n")
@@ -502,7 +538,7 @@ def plot_composite_convergence(out_dir: Path):
     best_weighted_rdos_history = []
     best_rdos_max_history = []
 
-    gamma = 2.5
+    gamma = load_gamma()
 
     for _, row in df_conv.iterrows():
         for col in ['best_e_form_formula', 'best_e_hull_formula', 'best_rdos_formula']:
@@ -545,9 +581,8 @@ def plot_composite_convergence(out_dir: Path):
 
         best_composite_history.append(best_comp)
         best_ehull_reward_history.append(0.0 if np.isnan(best_ehull) else best_ehull)
-        # store weighted rDOS for the best-composite compound (for component visualization)
-        # Append raw r_DOS for plotting
-        best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (best_rdos))
+        # store gamma * r_DOS for the best-composite compound (the actual composite-score component)
+        best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (best_rdos * gamma))
         # store monotonic max rDOS seen so far (unweighted)
         best_rdos_max_history.append(current_max_rdos)
 
@@ -556,8 +591,8 @@ def plot_composite_convergence(out_dir: Path):
     ax.plot(best_composite_history, lw=2, color='#1f77b4', label='Best Composite')
     # Best ehull_reward labeled as r_{E_{Hull}} with E italic and Hull roman
     ax.plot(best_ehull_reward_history, lw=1.5, color='#ff7f0e', label=r"Best $r_{E_{\mathrm{Hull}}}$")
-    # Best weighted rDOS (component of composite) labeled as r_{DOS}
-    ax.plot(best_weighted_rdos_history, lw=1.5, color='#2ca02c', label=r"Best $r_{\mathrm{DOS}}$")
+    # Best gamma * r_DOS (component of composite), explicitly labeled with the gamma factor
+    ax.plot(best_weighted_rdos_history, lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
 
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Score')

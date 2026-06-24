@@ -2,7 +2,7 @@
 """
 Create radial tree visualization colored by composite reward.
 
-Composite = beta*ehull_reward(e_hull) + gamma*r_DOS, beta=1.0, gamma=2.5
+Composite = beta*ehull_reward(e_hull) + gamma*r_DOS, beta=1.0, gamma loaded from config.json
 
 Blue-red color scheme: blue = higher composite (better), red = lower composite (worse).
 """
@@ -22,6 +22,10 @@ import re
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mcts_crystal.node import ehull_reward
+from mcts_crystal.cli import load_config
+
+_config = load_config(str(Path(__file__).resolve().parents[2] / 'config.json'))
+DEFAULT_GAMMA = float(_config.get('gamma', 0.0001))
 
 
 # Element categories
@@ -58,7 +62,7 @@ def reorder_formula_unicode(formula):
     return formula
 
 
-def compute_composite(e_hull, r_dos, beta=1.0, gamma=2.5):
+def compute_composite(e_hull, r_dos, beta=1.0, gamma=DEFAULT_GAMMA):
     """Compute composite reward (E_form is not part of the reward)."""
     return beta * ehull_reward(e_hull) + gamma * r_dos
 
@@ -270,16 +274,17 @@ def main():
         visit_counts[n] = float(G.nodes[n].get('visit_count', 0) or 0.0)
 
     # Choose readable sequential colormaps
-    cmap_comp = cm.get_cmap('viridis')
+    cmap_comp = matplotlib.colormaps['viridis']
     arr_comp = [v for v in composites.values() if v is not None and not pd.isna(v)]
     norm_comp = mcolors.Normalize(vmin=min(arr_comp), vmax=max(arr_comp)) if arr_comp else None
 
-    cmap_ehull = cm.get_cmap('Oranges')
+    cmap_ehull = matplotlib.colormaps['Oranges']
     arr_eh = [v for v in ehull_rewards.values() if v is not None and not pd.isna(v)]
     norm_ehull = mcolors.Normalize(vmin=min(arr_eh), vmax=max(arr_eh)) if arr_eh else None
 
-    cmap_rdos = cm.get_cmap('Greens')
-    arr_r = [v for v in r_doss.values() if v is not None and not pd.isna(v)]
+    cmap_rdos = matplotlib.colormaps['Greens']
+    # Color by gamma * r_DOS (the actual composite-score component), not raw r_DOS
+    arr_r = [v * DEFAULT_GAMMA for v in r_doss.values() if v is not None and not pd.isna(v)]
     norm_rdos = mcolors.Normalize(vmin=min(arr_r), vmax=max(arr_r)) if arr_r else None
 
     if norm_comp is None:
@@ -298,8 +303,8 @@ def main():
 
     node_colors_comp = node_colors_for_from_graph('composite', cmap_comp, norm_comp)
     node_colors_ehull = node_colors_for_from_graph('e_hull', cmap_ehull, norm_ehull)
-    # Use raw r_dos for coloring (no visual gamma scaling)
-    node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=1.0)
+    # Color by gamma * r_dos, explicitly labeled below
+    node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=DEFAULT_GAMMA)
 
     # Compute per-node entropy from visit counts to separate points visually
     total_visits = sum(visit_counts.values()) if visit_counts else 0.0
@@ -335,7 +340,7 @@ def main():
     panels = [
         (axes[0], node_colors_comp, cmap_comp, norm_comp, 'Composite Score'),
         (axes[1], node_colors_ehull, cmap_ehull, norm_ehull, r"$r_{E_{\mathrm{Hull}}}$"),
-        (axes[2], node_colors_rdos, cmap_rdos, norm_rdos, r"$r_{\mathrm{DOS}}$")
+        (axes[2], node_colors_rdos, cmap_rdos, norm_rdos, r"$\gamma \cdot r_{\mathrm{DOS}}$" + f" (γ={DEFAULT_GAMMA:g})")
     ]
 
     labels_abc = ['(a)', '(b)', '(c)']

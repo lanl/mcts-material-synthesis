@@ -1,6 +1,8 @@
 #!/bin/bash
 # Reproduce the U-only ehull_rdos study: sharp tanh E_hull + DOSCAR reward
-# Reward = 1.0*ehull_reward(E_hull) + 2.5*r_DOS, where ehull_reward = -tanh(300*(E_hull-0.05))
+# Reward = beta*ehull_reward(E_hull) + gamma*r_DOS, where ehull_reward = -tanh(300*(E_hull-0.05))
+# beta/gamma default to 1.0/0.0001 (see config.json/config.example.json - gamma is a single
+# value shared by the MCTS run and all analysis/plotting scripts)
 # F-block mode: u_only (108 composition design space)
 #
 # Starting material: Pb6U1W6 (centrally located between target compounds)
@@ -23,7 +25,7 @@ F_BLOCK_MODE="u_only"
 
 echo "=================================================="
 echo "EHULL + RDOS STUDY (U-only)"
-echo "Reward = 1.0*ehull_reward(E_hull) + 2.5*r_DOS"
+echo "Reward = beta*ehull_reward(E_hull) + gamma*r_DOS"
 echo "where ehull_reward = -tanh(300 * (E_hull - 0.05))"
 echo "=================================================="
 
@@ -49,8 +51,6 @@ python run_mcts.py \
     --epsilon 0.1 \
     --termination-limit 25 \
     --rollout-method ehull_rdos \
-    --beta 1.0 \
-    --gamma 2.5 \
     --seed 42 \
     "${MP_API_KEY_ARG[@]}" \
     --rollout-depth 3 \

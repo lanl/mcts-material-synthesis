@@ -3,9 +3,11 @@
 Calculate rewards for compounds based on DOSCAR peak data.
 
 For each compound, the reward is calculated as:
-    reward = (1/10000.0) * sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))
+    reward = sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))
 
-where sigma = 0.5 and the sum is over all peaks for that compound.
+where sigma = 0.5 and the sum is over all peaks for that compound. The result
+is left unscaled; any normalization is applied downstream via the composite
+score's gamma/gamma_prefactor weight, not baked into the reward itself.
 
 Usage:
     python calculate_doscar_rewards.py
@@ -35,12 +37,7 @@ def calculate_compound_reward(peaks_df, sigma=0.5):
 
     # Calculate the sum of (peak_height / peak_width) * exp_factor
     peak_contributions = (peaks_df['PEAK_HEIGHT'] / peaks_df['PEAK_WIDTH']) * exp_factor
-    total_sum = peak_contributions.sum()
-
-    # Divide by 1000.0 to get final reward
-    reward = total_sum / 1000.0
-
-    return reward
+    return peak_contributions.sum()
 
 
 def main():
@@ -95,28 +92,23 @@ def main():
     logger.info("\n3. Calculating rewards for each compound...")
     sigma = 0.5
     logger.info(f"   Using sigma = {sigma}")
-    logger.info(f"   Formula: (1/10000.0) * sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))")
+    logger.info(f"   Formula: sum((peak_height/peak_width) * exp(-0.5*(1/sigma)^2))")
 
     # Group by compound name
     compound_groups = filtered_df.groupby('COMPOUND_NAME')
     n_compounds = len(compound_groups)
 
-    # Calculate reward for each compound (unscaled)
+    # Calculate reward for each compound (unscaled; normalization happens
+    # downstream via gamma/gamma_prefactor, not here)
     results = []
-    unscaled_rewards = []
     for compound_name, group_df in compound_groups:
-        # Calculate unscaled sum
         exp_factor = np.exp(-0.5 * (1.0 / sigma) ** 2)
         peak_contributions = (group_df['PEAK_HEIGHT'] / group_df['PEAK_WIDTH']) * exp_factor
         unscaled_sum = peak_contributions.sum()
-        unscaled_rewards.append(unscaled_sum)
-
-        # Calculate scaled reward
-        reward_normalized = unscaled_sum / 10000.0
         results.append({
             'compound_name': compound_name,
             'reward_raw': unscaled_sum,
-            'reward_normalized': reward_normalized
+            'reward_normalized': unscaled_sum
         })
 
     # Create results DataFrame
@@ -124,15 +116,8 @@ def main():
 
     logger.info(f"   Calculated rewards for all {n_compounds} compounds")
 
-    # Display unscaled statistics
-    logger.info("\n   Unscaled reward statistics (before dividing by 10000):")
-    logger.info(f"   Min (unscaled):  {min(unscaled_rewards):.2f}")
-    logger.info(f"   Max (unscaled):  {max(unscaled_rewards):.2f}")
-    logger.info(f"   Mean (unscaled): {np.mean(unscaled_rewards):.2f}")
-    logger.info(f"   Median (unscaled): {np.median(unscaled_rewards):.2f}")
-
     # Step 4: Display statistics
-    logger.info("\n4. Scaled Reward Statistics (÷10000):")
+    logger.info("\n4. Reward Statistics:")
     logger.info(f"   Mean reward:   {results_df['reward_normalized'].mean():.6f}")
     logger.info(f"   Median reward: {results_df['reward_normalized'].median():.6f}")
     logger.info(f"   Min reward:    {results_df['reward_normalized'].min():.6f}")

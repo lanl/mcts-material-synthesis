@@ -6,8 +6,9 @@ Reads all_compounds.csv from MCTS output and computes:
 - ehull_reward: tanh-transformed energy above hull reward (-tanh(300*(e_hull-0.05)))
 - composite_score: beta*ehull_reward + gamma*r_DOS
 
-Weights for this study: beta=1.0, gamma=2.5 (E_form is tracked for reference only,
-it is not part of the reward - see mcts_crystal/node.py:ehull_reward)
+Weights for this study: beta=1.0, gamma=0.0001 (E_form is tracked for reference only,
+it is not part of the reward - see mcts_crystal/node.py:ehull_reward). gamma is loaded
+from config.json so it stays in sync with the value used during the MCTS run.
 """
 
 import sys
@@ -17,6 +18,7 @@ from ase.formula import Formula
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mcts_crystal.node import ehull_reward
+from mcts_crystal.cli import load_config
 
 
 def main():
@@ -75,7 +77,6 @@ def main():
                         v = float(val)
                     except Exception:
                         continue
-                    v = max(0.0, min(1.0, v))
                     elems = parse_elems(name)
                     key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
                     if not key:
@@ -94,8 +95,9 @@ def main():
     # Compute the E_hull reward
     df['ehull_reward'] = df['e_above_hull'].apply(ehull_reward)
 
-    beta = 1.0
-    gamma = 2.5
+    config = load_config(str(Path(__file__).resolve().parents[2] / 'config.json'))
+    beta = float(config.get('beta', 1.0))
+    gamma = float(config.get('gamma', 0.0001))
 
     df['weighted_r_DOS'] = gamma * df['r_DOS']
     df['composite_score'] = beta * df['ehull_reward'] + df['weighted_r_DOS']

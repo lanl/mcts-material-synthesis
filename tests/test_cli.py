@@ -33,7 +33,7 @@ class TestBuildParser:
         args = build_parser({}).parse_args([])
         assert args.rollout_method == 'ehull'
         assert args.beta == 1.0
-        assert args.gamma == 2.5
+        assert args.gamma == 0.0001
 
     def test_invalid_rollout_method_rejected(self):
         with pytest.raises(SystemExit):

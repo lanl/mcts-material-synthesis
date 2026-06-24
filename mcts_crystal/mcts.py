@@ -212,7 +212,7 @@ class MCTS:
 
     def expansion_simulation(self, rollout_depth: int = 1, n_rollout: int = 1,
                            energy_calculator=None, rollout_method: str = 'ehull',
-                           beta: float = 1.0, gamma: float = 2.5,
+                           beta: float = 1.0, gamma: float = 0.0001,
                            doscar_lookup=None, n_workers: int = 1) -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
@@ -223,7 +223,7 @@ class MCTS:
             energy_calculator: Energy calculator instance
             rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
-            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
             n_workers: Number of worker threads for the n_rollout samples
                 (default: 1, i.e. sequential, identical to prior behavior)
@@ -346,7 +346,7 @@ class MCTS:
     def run(self, n_iterations: int, energy_calculator=None,
             rollout_depth: int = 1, n_rollout: int = 10,
             selection_mode: str = 'epsilon', rollout_method: str = 'ehull',
-            beta: float = 1.0, gamma: float = 2.5,
+            beta: float = 1.0, gamma: float = 0.0001,
             doscar_lookup=None, n_workers: int = 1) -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
@@ -359,7 +359,7 @@ class MCTS:
             selection_mode: Node selection mode
             rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
-            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
                   'ehull':      reward = ehull_reward(e_above_hull)
                   'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS

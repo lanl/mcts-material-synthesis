@@ -9,6 +9,7 @@ __pycache__/
 *.egg-info/
 .ipynb_checkpoints/
 .pytest_cache/
+.venv/
 
 # OS
 .DS_Store
@@ -17,7 +18,6 @@ __pycache__/
 doscar_rewards.csv
 doscar_peaks_data_with_U.csv
 high_throughput_mace_results.full.csv
-shunshun_mace_predictions_with_elements.csv
 *.tar.gz
 
 # MCTS run outputs (regenerate locally with run_mcts.py)

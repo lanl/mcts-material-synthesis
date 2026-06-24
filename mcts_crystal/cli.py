@@ -19,7 +19,7 @@ Examples:
     python run_mcts.py --iterations 100                   # 100 iterations
     python run_mcts.py --structure my_structure.cif        # Custom structure
     python run_mcts.py --rollout-method ehull --mp-api-key YOUR_KEY       # E_hull only (MACE + Materials Project, no DFT/DOSCAR data needed)
-    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_rewards.csv)
+    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_rewards.csv)
     python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_rewards.csv, no MACE/MP needed)
     python run_mcts.py --f-block-mode lanthanides_u_extended  # Lanthanides + U, extended moves
     python run_mcts.py --exploration-constant 0.2          # Higher exploration (default: 0.1)
@@ -147,8 +147,8 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                             'Reward: ehull -> ehull_reward(e_above_hull); ehull_rdos -> beta*ehull_reward(e_above_hull) + gamma*r_DOS; rdos -> r_DOS')
     parser.add_argument('--beta', type=float, default=1.0,
                        help='Weight for the E_hull reward when using ehull_rdos (default: 1.0)')
-    parser.add_argument('--gamma', type=float, default=2.5,
-                       help='Weight for the rDOS reward when using ehull_rdos (default: 2.5)')
+    parser.add_argument('--gamma', type=float, default=0.0001,
+                       help='Weight for the rDOS reward when using ehull_rdos (default: 0.0001)')
     parser.add_argument('--termination-limit', type=int, default=60,
                        help='Number of visits before terminating a node without improvement (default: 60)')
     parser.add_argument('--epsilon', '-e', type=float, default=0.2,
@@ -448,7 +448,7 @@ def main():
     logger.info(f"   python run_mcts.py --iterations 1000  # Longer search")
     logger.info(f"   python run_mcts.py --structure my_file.cif  # Different starting material")
     logger.info(f"   python run_mcts.py --f-block-mode lanthanides_u_extended  # Fast exploration of heavy lanthanides")
-    logger.info(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5  # E_hull + rDOS")
+    logger.info(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001  # E_hull + rDOS")
     logger.info(f"   python run_mcts.py -c 0.2  # Higher exploration constant")
 
     logger.info("=" * 80)

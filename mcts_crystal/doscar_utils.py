@@ -62,16 +62,15 @@ class DoscarRewardLookup:
                 ]
                 filtered_df = pd.concat([core_compounds, valence_to_include])
 
-                # Compute reward for each compound
+                # Compute reward for each compound. Left unscaled here; any
+                # normalization is applied downstream via gamma/gamma_prefactor.
                 sigma = 0.5
                 exp_factor = np.exp(-0.5 * (1.0 / sigma) ** 2)
                 results = {}
                 for cname, group in filtered_df.groupby('COMPOUND_NAME'):
                     # sum (PEAK_HEIGHT / PEAK_WIDTH) * exp_factor
                     contrib = (group['PEAK_HEIGHT'] / group['PEAK_WIDTH']) * exp_factor
-                    unscaled_sum = contrib.sum()
-                    reward_normalized = unscaled_sum / 10000.0
-                    results[cname] = float(reward_normalized)
+                    results[cname] = float(contrib.sum())
 
                 self.rewards_dict = results
                 logger.info(f"   Computed {len(self.rewards_dict)} DOSCAR rewards from peaks data")

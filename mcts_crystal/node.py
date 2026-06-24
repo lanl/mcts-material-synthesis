@@ -379,7 +379,7 @@ class MCTSTreeNode:
                     gamma = float(parts[3]) if len(parts) > 3 else 0.0
                 except (IndexError, ValueError):
                     beta = 1.0
-                    gamma = 2.5
+                    gamma = 0.0001
 
                 doscar_reward = 0.0
                 if gamma > 0 and doscar_lookup is not None:

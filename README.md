@@ -39,7 +39,7 @@ The core install (no `[full]`) is intentionally lightweight: `rollout-method rdo
 Once installed, you get a console command in addition to the script entry point:
 
 ```bash
-mcts-run --rollout-method ehull_rdos --beta 1.0 --gamma 2.5   # equivalent to: python run_mcts.py --rollout-method ehull_rdos ...
+mcts-run --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001   # equivalent to: python run_mcts.py --rollout-method ehull_rdos ...
 ```
 
 ### Setup
@@ -87,7 +87,7 @@ This will:
 python run_mcts.py --iterations 1000 --rollout-method ehull
 
 # E_hull + rDOS (the published study's reward)
-python run_mcts.py --iterations 1000 --rollout-method ehull_rdos --beta 1.0 --gamma 2.5
+python run_mcts.py --iterations 1000 --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001
 
 # rDOS only
 python run_mcts.py --iterations 1000 --rollout-method rdos
@@ -114,7 +114,7 @@ To reproduce the published U-only `ehull_rdos` study and its figures end to end,
 |-----------|---------|---------|-------------|
 | `--rollout-method` | `ehull` | `ehull`, `ehull_rdos`, `rdos` | Rollout evaluation method |
 | `--beta` | 1.0 | float | Weight for the E_hull reward in `ehull_rdos` |
-| `--gamma` | 2.5 | float | Weight for the rDOS reward in `ehull_rdos` |
+| `--gamma` | 0.0001 | float | Weight for the rDOS reward in `ehull_rdos` |
 | `--mp-api-key` | None | string | Materials Project API key (required for `ehull`, `ehull_rdos`; prefer `config.json`) |
 | `--exploration-constant` | 0.1 | float | UCB exploration constant (higher = more exploration vs exploitation) |
 | `--f-block-mode` | `u_only` | `u_only`, `full_f_block`, `experimental`, `lanthanides_u`, `lanthanides_u_extended` | F-block element substitution strategy |
@@ -131,7 +131,7 @@ To reproduce the published U-only `ehull_rdos` study and its figures end to end,
 
 - **`ehull_rdos`**: E_hull + electronic density-of-states reward, the formulation used in the published study
   - Reward = `beta * ehull_reward(E_hull) + gamma * r_DOS`
-  - Default `beta=1.0`, `gamma=2.5`
+  - Default `beta=1.0`, `gamma=0.0001`
   - **Requires a Materials Project API key and `doscar_rewards.csv`.**
 
 - **`rdos`**: DOSCAR-derived electronic structure reward only
@@ -192,7 +192,6 @@ This repository ships **no proprietary DFT/DOSCAR data**. The high-throughput en
 |---|---|---|
 | `high_throughput_mace_results.full.csv` | all rollout methods | CSV with columns `name` (chemical formula, e.g. `Ti6Si6Ce`), `e_form` (eV/atom), `e_above_hull` (eV/atom), `e_decomp` (eV/atom), `source` (free text) |
 | `doscar_rewards.csv` | `ehull_rdos`, `rdos` | CSV mapping chemical formula to a precomputed rDOS value (Gaussian-weighted sum of DOS peak intensity near the Fermi level — see `mcts_crystal/doscar_utils.py:DoscarRewardLookup`) |
-| `shunshun_mace_predictions_with_elements.csv` (repo root) | `examples/ehull_rdos_u_only_study/prepare_sg191_composite_data.py` only | CSV of all SG191 RM₆X₆ reference compounds with `Predicted_formation_energy (eV/atom)`, `energy_above_hull`, `Space_group` columns; used only to draw a comparison background scatter, not required to run MCTS itself |
 
 If you don't have these files, `run_mcts.py` will exit with a clear error naming the missing file rather than silently degrading. Once the underlying high-throughput study is released, these files will be published alongside it — check the paper / repo announcements for the data DOI.
 
@@ -285,7 +284,7 @@ mcts_materials/
 
 ## Reproducing the Published Study
 
-`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 2.5`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
+`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 0.0001`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
 
 - `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
 - `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, SG191 comparison, convergence plot, composite-colored radial tree) from the run's output
