@@ -288,7 +288,7 @@ mcts_materials/
 
 ## Reproducing the Published Study
 
-`analysis/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 0.0001`, default `ucb1` selection mode, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
+`analysis/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (U-only f-block mode; `--rollout-method ehull_rdos`, plus `iterations`/`selection_mode`/`exploration_constant`/`beta`/`gamma`/`transition_metal`/`group_iv` all read from `config.json` rather than hardcoded in the script - see `config.json`/`config.example.json` for current values):
 
 - `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
 - `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, convergence plot, composite-colored radial tree) via `generate_figures.py`, plus `generate_top10_report.py` for the ranked compound list
