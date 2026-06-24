@@ -2,6 +2,7 @@
 Visualization tools for MCTS tree and results.
 """
 
+import logging
 import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
@@ -14,7 +15,9 @@ from typing import Dict, List, Optional, Tuple
 from matplotlib.patches import Rectangle, Patch
 from collections import defaultdict
 from .node import MCTSTreeNode
-from .mcts import MCTS
+from .mcts import MCTS, stat_dict_to_dataframe
+
+logger = logging.getLogger(__name__)
 
 F_BLOCK = {
     "La","Ce","Pr","Nd","Pm","Sm","Eu","Gd","Tb","Dy","Ho","Er","Tm","Yb","Lu",
@@ -146,7 +149,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Tree visualization saved to {save_path}")
+            logger.info(f"Tree visualization saved to {save_path}")
             
         return fig
         
@@ -212,19 +215,14 @@ class TreeVisualizer:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
         
         # Convert to DataFrame
-        df = pd.DataFrame(stat_dict).T
+        df = stat_dict_to_dataframe(stat_dict)
         if df.empty:
-            print("No data to plot")
+            logger.info("No data to plot")
             return fig
-            
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
-        
+
         # Load formation energy values from CSV file if provided for more accurate data
         csv_energy_lookup = {}
         if csv_file and Path(csv_file).exists():
@@ -232,9 +230,9 @@ class TreeVisualizer:
                 csv_df = pd.read_csv(csv_file)
                 if 'name' in csv_df.columns and 'e_form' in csv_df.columns:
                     csv_energy_lookup = dict(zip(csv_df['name'], csv_df['e_form']))
-                    print(f"Loaded {len(csv_energy_lookup)} formation energy values from CSV")
+                    logger.info(f"Loaded {len(csv_energy_lookup)} formation energy values from CSV")
             except Exception as e:
-                print(f"Warning: Could not load CSV formation energy data: {e}")
+                logger.warning(f"Could not load CSV formation energy data: {e}")
         
         # Update formation energy values from CSV where available
         for idx, row in df.iterrows():
@@ -269,7 +267,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Energy distribution plot saved to {save_path}")
+            logger.info(f"Energy distribution plot saved to {save_path}")
             
         return fig
     
@@ -285,7 +283,7 @@ class TreeVisualizer:
                     e_form = float(row['e_form'])
                     lookup[formula] = e_form
         except Exception as e:
-            print(f"Warning: Could not load formation energies from {csv_file}: {e}")
+            logger.warning(f"Could not load formation energies from {csv_file}: {e}")
         return lookup
     
     def _normalize_formula_for_lookup(self, formula: str) -> str:
@@ -342,19 +340,14 @@ class TreeVisualizer:
             plt.suptitle('MCTS Search Progress (No Data)', fontsize=14)
             if save_path:
                 plt.savefig(save_path, dpi=300, bbox_inches='tight')
-                print(f"Iteration progress plot saved to {save_path}")
+                logger.info(f"Iteration progress plot saved to {save_path}")
             return fig
             
         # Convert stat_dict to DataFrame
-        df = pd.DataFrame(mcts.stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df = stat_dict_to_dataframe(mcts.stat_dict)
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
-        
+
         # Simulate discovery order based on visit counts (higher visit count = discovered earlier)
         # This is an approximation since we don't have exact iteration timing
         total_compounds = len(df)
@@ -419,7 +412,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Iteration progress plot saved to {save_path}")
+            logger.info(f"Iteration progress plot saved to {save_path}")
             
         return fig
         
@@ -438,16 +431,11 @@ class TreeVisualizer:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
         
         # Convert to DataFrame
-        df = pd.DataFrame(stat_dict).T
+        df = stat_dict_to_dataframe(stat_dict)
         if df.empty:
-            print("No data to plot")
+            logger.info("No data to plot")
             return fig
-            
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -458,9 +446,9 @@ class TreeVisualizer:
                 csv_df = pd.read_csv(csv_file)
                 if 'name' in csv_df.columns and 'e_above_hull' in csv_df.columns:
                     csv_energy_lookup = dict(zip(csv_df['name'], csv_df['e_above_hull']))
-                    print(f"Loaded {len(csv_energy_lookup)} energy above hull values from CSV")
+                    logger.info(f"Loaded {len(csv_energy_lookup)} energy above hull values from CSV")
             except Exception as e:
-                print(f"Warning: Could not load CSV energy data: {e}")
+                logger.warning(f"Could not load CSV energy data: {e}")
         
         # Update energy above hull values from CSV where available
         for idx, row in df.iterrows():
@@ -511,7 +499,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Energy above hull distribution plot saved to {save_path}")
+            logger.info(f"Energy above hull distribution plot saved to {save_path}")
             
         return fig
     
@@ -534,16 +522,11 @@ class TreeVisualizer:
             plt.suptitle('MCTS Search Progress - Best Energies and Rewards (No Data)', fontsize=14)
             if save_path:
                 plt.savefig(save_path, dpi=300, bbox_inches='tight')
-                print(f"Energy above hull iteration progress plot saved to {save_path}")
+                logger.info(f"Energy above hull iteration progress plot saved to {save_path}")
             return fig
             
         # Convert stat_dict to DataFrame
-        df = pd.DataFrame(mcts.stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df.shape[1] == 6:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df = stat_dict_to_dataframe(mcts.stat_dict)
         df = df.reset_index()
         df.columns = ['formula'] + list(df.columns[1:])
         
@@ -625,7 +608,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Energy above hull iteration progress plot saved to {save_path}")
+            logger.info(f"Energy above hull iteration progress plot saved to {save_path}")
             
         return fig
         
@@ -651,7 +634,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Search progress plot saved to {save_path}")
+            logger.info(f"Search progress plot saved to {save_path}")
             
         return fig
         
@@ -720,7 +703,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Summary plot saved to {save_path}")
+            logger.info(f"Summary plot saved to {save_path}")
             
         return fig
         
@@ -764,7 +747,7 @@ class TreeVisualizer:
         tree_data = self._build_tree_data_from_mcts(mcts)
         
         if not tree_data:
-            print("No tree data available for visualization")
+            logger.info("No tree data available for visualization")
             return
             
         # Build graph
@@ -791,7 +774,7 @@ class TreeVisualizer:
             root_id = next(node_id for node_id, info in tree_data.items() 
                           if info.get("parent_id") is None)
         except StopIteration:
-            print("No root node found in tree data")
+            logger.info("No root node found in tree data")
             return
         
         # Compute radial layout
@@ -847,7 +830,7 @@ class TreeVisualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Radial tree visualization saved to {output_path}")
+        logger.info(f"Radial tree visualization saved to {output_path}")
 
     def _build_tree_data_from_mcts(self, mcts: MCTS) -> Dict:
         """Build tree data dictionary from MCTS instance."""
@@ -948,10 +931,10 @@ class TreeVisualizer:
             if csv_path.exists():
                 try:
                     df = pd.read_csv(csv_path)
-                    print(f"Loading formation energies from: {csv_path}")
+                    logger.info(f"Loading formation energies from: {csv_path}")
                     break
                 except Exception as e:
-                    print(f"Failed to load {csv_path}: {e}")
+                    logger.info(f"Failed to load {csv_path}: {e}")
                     continue
         
         if df is not None and 'name' in df.columns and 'e_form' in df.columns:
@@ -962,7 +945,7 @@ class TreeVisualizer:
             # In practice, you'd want to match formulas properly
             compound_energies = energy_map
         else:
-            print("Warning: Could not load formation energies from CSV")
+            logger.warning("Could not load formation energies from CSV")
             
         return compound_energies
     
@@ -991,12 +974,7 @@ class TreeVisualizer:
         data = defaultdict(dict)  # group_IV → {TM: min(E_form)}
         
         # Convert stat_dict to DataFrame for easier processing
-        df_stats = pd.DataFrame(stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df_stats.shape[1] == 6:
-            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df_stats = stat_dict_to_dataframe(stat_dict)
         df_stats = df_stats.reset_index()
         df_stats.columns = ['formula'] + list(df_stats.columns[1:])
         
@@ -1045,7 +1023,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Formation energy by elements plot saved to {save_path}")
+            logger.info(f"Formation energy by elements plot saved to {save_path}")
             
         return fig
     
@@ -1074,12 +1052,7 @@ class TreeVisualizer:
         data = defaultdict(dict)  # group_IV → {TM: min(E_above_hull)}
         
         # Convert stat_dict to DataFrame for easier processing
-        df_stats = pd.DataFrame(stat_dict).T
-        # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-        if df_stats.shape[1] == 6:
-            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-        else:
-            df_stats.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+        df_stats = stat_dict_to_dataframe(stat_dict)
         df_stats = df_stats.reset_index()
         df_stats.columns = ['formula'] + list(df_stats.columns[1:])
         
@@ -1132,7 +1105,7 @@ class TreeVisualizer:
         
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Energy above hull by elements plot saved to {save_path}")
+            logger.info(f"Energy above hull by elements plot saved to {save_path}")
             
         return fig
     

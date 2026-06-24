@@ -2,6 +2,7 @@
 Energy calculator using MACE with CSV lookup for cached results.
 """
 
+import logging
 import threading
 import pandas as pd
 import numpy as np
@@ -15,6 +16,8 @@ from ase.filters import ExpCellFilter
 # Project calls (install with `pip install -e .[full]`). They are imported lazily inside
 # the methods that use them so the rest of this package stays importable/testable without
 # them - cache-only lookups work fine either way.
+
+logger = logging.getLogger(__name__)
 
 
 class MaceEnergyCalculator:
@@ -45,7 +48,6 @@ class MaceEnergyCalculator:
         # so concurrent rollouts can't corrupt the shared cache.
         self._cache_lock = threading.Lock()
 
-
         # Load cached data if available
         if csv_file and Path(csv_file).exists():
             self.cache_df = pd.read_csv(csv_file)
@@ -64,8 +66,8 @@ class MaceEnergyCalculator:
 
                 # Also fix any E_decomp errors: E_decomp should equal E_form - E_hull
                 self.cache_df['e_decomp'] = self.cache_df['e_form'] - self.cache_df['e_above_hull']
-                print(f"Added data_quality column and corrected E_decomp values")
-            print(f"Loaded {len(self.cache_df)} cached calculations from {csv_file}")
+                logger.info(f"Added data_quality column and corrected E_decomp values")
+            logger.info(f"Loaded {len(self.cache_df)} cached calculations from {csv_file}")
         else:
             self.cache_df = pd.DataFrame(columns=['name', 'e_form', 'e_above_hull', 'e_decomp', 'data_quality'])
             
@@ -76,14 +78,14 @@ class MaceEnergyCalculator:
         """Build a new MACE-MP calculator instance, or None if loading fails."""
         try:
             from mace.calculators import mace_mp
-            self.calculator = mace_mp(
-                model="large", 
-                dispersion=False, 
-                default_dtype="float64", 
+            return mace_mp(
+                model="large",
+                dispersion=False,
+                default_dtype="float64",
                 device='cpu'
             )
         except Exception as e:
-            print(f"Warning: Could not initialize MACE calculator: {e}")
+            logger.warning(f"Could not initialize MACE calculator: {e}")
             return None
 
     def _get_calculator(self):
@@ -103,7 +105,6 @@ class MaceEnergyCalculator:
         if not hasattr(self._thread_local, 'calculator'):
             self._thread_local.calculator = self._init_calculator()
         return self._thread_local.calculator
-
 
     def _get_cached_result(self, formula: str) -> Optional[Tuple[float, float]]:
         """
@@ -129,8 +130,8 @@ class MaceEnergyCalculator:
 
             # Check data quality and apply penalty if needed
             if 'data_quality' in row and row['data_quality'] in ['no_mp_data', 'error']:
-                print(f"      Cached compound {formula} has data_quality={row['data_quality']}")
-                print(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
+                logger.info(f"      Cached compound {formula} has data_quality={row['data_quality']}")
+                logger.info(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
                 e_above_hull = 10.0
 
             return e_form, e_above_hull
@@ -146,8 +147,8 @@ class MaceEnergyCalculator:
 
                 # Check data quality and apply penalty if needed
                 if 'data_quality' in row and row['data_quality'] in ['no_mp_data', 'error']:
-                    print(f"   ⚠️  Cached compound {cached_formula} has data_quality={row['data_quality']}")
-                    print(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
+                    logger.warning(f"   Cached compound {cached_formula} has data_quality={row['data_quality']}")
+                    logger.info(f"      Applying penalty: setting e_above_hull = 10.0 eV/atom")
                     e_above_hull = 10.0
 
                 return e_form, e_above_hull
@@ -232,7 +233,7 @@ class MaceEnergyCalculator:
             data_quality can be: 'valid', 'no_mp_data', 'no_api_key', 'error'
         """
         if not self.mp_api_key:
-            print(f"   No MP API key provided - using e_decomp = 0.0")
+            logger.info(f"   No MP API key provided - using e_decomp = 0.0")
             return 0.0, 'no_api_key'
             
         chemical_formula = atoms.get_chemical_formula()
@@ -245,7 +246,7 @@ class MaceEnergyCalculator:
             from pymatgen.analysis.phase_diagram import PhaseDiagram
             from matbench_discovery.energy import get_e_form_per_atom
 
-            print(f"   Calculating decomposition energy for {chemical_formula} using MP API...")
+            logger.info(f"   Calculating decomposition energy for {chemical_formula} using MP API...")
 
             with MPRester(self.mp_api_key) as mpr:
                 # Use the updated MP API method
@@ -256,22 +257,22 @@ class MaceEnergyCalculator:
                     )
                 except TypeError:
                     # Fallback for newer MP API versions
-                    print(f"   Using fallback MP API call (no additional criteria)")
+                    logger.info(f"   Using fallback MP API call (no additional criteria)")
                     entries = mpr.get_entries_in_chemsys(elements=element_set)
                 
             if not entries:
-                print(f"     Warning: No MP entries found for elements {element_set}")
-                print(f"      Compound {chemical_formula} will be flagged as missing MP data")
+                logger.warning(f"     No MP entries found for elements {element_set}")
+                logger.info(f"      Compound {chemical_formula} will be flagged as missing MP data")
                 return 0.0, 'no_mp_data'
 
-            print(f"   Found {len(entries)} MP entries for elements {element_set}")
+            logger.info(f"   Found {len(entries)} MP entries for elements {element_set}")
 
             # Create phase diagram
             pd_obj = PhaseDiagram(entries)
             comp = Composition(chemical_formula)
             decomp = pd_obj.get_decomposition(comp)
 
-            print(f"   Decomposition products: {len(decomp)} phases")
+            logger.info(f"   Decomposition products: {len(decomp)} phases")
 
             total_e_decomp = 0.0
             for entry, fraction in decomp.items():
@@ -282,7 +283,7 @@ class MaceEnergyCalculator:
                     # Use MACE to calculate energy of decomposition product
                     calculator = self._get_calculator()
                     if calculator is None:
-                        print(f"   Warning: No MACE calculator available, using entry energy")
+                        logger.warning(f"   No MACE calculator available, using entry energy")
                         e_form = entry.energy_per_atom
                     else:
                         decomp_atoms.calc = calculator
@@ -292,24 +293,24 @@ class MaceEnergyCalculator:
                         ))
 
                     total_e_decomp += e_form * fraction
-                    print(f"     {entry.composition}: e_form={e_form:.4f} eV/atom (fraction={fraction:.4f})")
+                    logger.info(f"     {entry.composition}: e_form={e_form:.4f} eV/atom (fraction={fraction:.4f})")
 
                 except Exception as phase_error:
-                    print(f"   Warning: Error processing decomposition phase {entry.composition}: {phase_error}")
+                    logger.error(f"   Error processing decomposition phase {entry.composition}: {phase_error}")
                     # Use the MP energy as fallback
                     e_form = entry.energy_per_atom
                     total_e_decomp += e_form * fraction
-                    print(f"     {entry.composition}: using MP energy={e_form:.4f} eV/atom (fraction={fraction:.4f})")
+                    logger.info(f"     {entry.composition}: using MP energy={e_form:.4f} eV/atom (fraction={fraction:.4f})")
 
-            print(f"   ✓ Calculated decomposition energy: {total_e_decomp:.4f} eV/atom")
+            logger.info(f"   Calculated decomposition energy: {total_e_decomp:.4f} eV/atom")
             return total_e_decomp, 'valid'
 
         except Exception as e:
-            print(f"      Error calculating decomposition energy for {chemical_formula}: {e}")
-            print(f"      This may be due to: network issues, MP API limits, or missing MP data")
-            print(f"      Compound will be flagged with low reward to avoid selection")
+            logger.error(f"      Error calculating decomposition energy for {chemical_formula}: {e}")
+            logger.info(f"      This may be due to: network issues, MP API limits, or missing MP data")
+            logger.info(f"      Compound will be flagged with low reward to avoid selection")
             import traceback
-            print(f"      Full error: {traceback.format_exc()}")
+            logger.error(f"      Full error: {traceback.format_exc()}")
             return 0.0, 'error'
             
     def calculate_energies(self, atoms: Atoms) -> Tuple[float, float]:
@@ -332,7 +333,7 @@ class MaceEnergyCalculator:
         with self._cache_lock:
             cached_result = self._get_cached_result(formula)
             if cached_result is not None:
-                print(f"   Using cached result for {formula}")
+                logger.info(f"   Using cached result for {formula}")
                 # Also load e_decomp for cached results
                 cached_row = self.cache_df[self.cache_df['name'] == formula]
                 if not cached_row.empty and 'e_decomp' in cached_row.columns:
@@ -340,11 +341,11 @@ class MaceEnergyCalculator:
                 return cached_result
 
         # Only perform calculation if not in cache
-        print(f"   Computing new MACE calculation for {formula} (not in cache)")
+        logger.info(f"   Computing new MACE calculation for {formula} (not in cache)")
 
         calculator = self._get_calculator()
         if calculator is None:
-            print(f"   Warning: No calculator available, returning zero energies for {formula}")
+            logger.warning(f"   No calculator available, returning zero energies for {formula}")
             return 0.0, 0.0
 
         try:
@@ -374,9 +375,9 @@ class MaceEnergyCalculator:
             if data_quality in ['no_mp_data', 'error']:
                 # Set e_above_hull to a very large positive value (unstable)
                 e_above_hull = 10.0  # 10 eV/atom above hull = extremely unstable
-                print(f"      WARNING: Missing MP data for {formula}")
-                print(f"      Setting e_above_hull = {e_above_hull} eV/atom (flagged as unstable)")
-                print(f"      This compound will have very low reward and be avoided by MCTS")
+                logger.warning(f"      WARNING: Missing MP data for {formula}")
+                logger.info(f"      Setting e_above_hull = {e_above_hull} eV/atom (flagged as unstable)")
+                logger.info(f"      This compound will have very low reward and be avoided by MCTS")
             else:
                 e_above_hull = e_form - e_decomp
 
@@ -385,12 +386,12 @@ class MaceEnergyCalculator:
 
             # Cache the result for future use with data quality flag
             self._cache_result(formula, e_form, e_above_hull, e_decomp, data_quality)
-            print(f"   ✓ Cached new result: {formula} E_form={e_form:.4f} eV/atom, data_quality={data_quality}")
+            logger.info(f"   Cached new result: {formula} E_form={e_form:.4f} eV/atom, data_quality={data_quality}")
 
             return e_form, e_above_hull
             
         except Exception as e:
-            print(f"   Error calculating energies for {formula}: {e}")
+            logger.error(f"   Error calculating energies for {formula}: {e}")
             # Cache with error flag to avoid repeated failures
             self._cache_result(formula, 0.0, 10.0, 0.0, 'error')
             return 0.0, 10.0
@@ -414,6 +415,6 @@ class MaceEnergyCalculator:
         output_file = filename or self.csv_file
         if output_file and self.cache_df is not None:
             self.cache_df.to_csv(output_file, index=False)
-            print(f"Saved cache to {output_file}")
+            logger.info(f"Saved cache to {output_file}")
         else:
-            print("No filename specified or no cache to save")
+            logger.info("No filename specified or no cache to save")

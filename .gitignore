@@ -9,17 +9,18 @@ __pycache__/
 *.egg-info/
 .ipynb_checkpoints/
 .pytest_cache/
+.venv/
 
 # OS
 .DS_Store
 
 # Embargoed/large data - document in README, do not commit until public release
-doscar_rewards.csv
 doscar_peaks_data_with_U.csv
 high_throughput_mace_results.full.csv
-shunshun_mace_predictions_with_elements.csv
 *.tar.gz
 
 # MCTS run outputs (regenerate locally with run_mcts.py)
 mcts_results/
 *.pkl
+# Local experimental compounds list (do not commit)
+analysis/ehull_rdos_u_only_study/compounds_filtered.dat

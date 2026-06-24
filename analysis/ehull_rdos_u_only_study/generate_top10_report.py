@@ -3,11 +3,12 @@
 Generate top 10 compounds report for the ehull_rdos reward.
 
 Reads all_compounds.csv from MCTS output and computes:
-- ehull_reward: tanh-transformed energy above hull reward (-tanh(300*(e_hull-0.05)))
+- ehull_reward: tanh-transformed energy above hull reward (-tanh(120*(e_hull-0.05)))
 - composite_score: beta*ehull_reward + gamma*r_DOS
 
-Weights for this study: beta=1.0, gamma=2.5 (E_form is tracked for reference only,
-it is not part of the reward - see mcts_crystal/node.py:ehull_reward)
+Weights for this study: beta=1.0, gamma=0.0001 (E_form is tracked for reference only,
+it is not part of the reward - see mcts_crystal/node.py:ehull_reward). gamma is loaded
+from config.json so it stays in sync with the value used during the MCTS run.
 """
 
 import sys
@@ -17,6 +18,7 @@ from ase.formula import Formula
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mcts_crystal.node import ehull_reward
+from mcts_crystal.cli import load_config
 
 
 def main():
@@ -33,13 +35,66 @@ def main():
 
     # Rename columns for consistency
     df['name'] = df['formula']
-    df['r_DOS'] = df['dos_reward']
+    # Compute r_DOS: prefer existing `dos_reward` if available, otherwise compute
+    # in real time from the raw peaks file (no precomputed rewards cache)
+    if 'dos_reward' in df.columns:
+        df['r_DOS'] = df['dos_reward']
+    else:
+        # search up to a few parent levels for the peaks file
+        MAX_PARENT_DEPTH = 4
+        search_roots = [script_dir] + list(script_dir.parents)[:MAX_PARENT_DEPTH]
+        peaks_path = None
+        for r in search_roots:
+            try:
+                cand = list(Path(r).rglob('doscar_peaks_data_with_U.csv'))
+            except OSError:
+                cand = []
+            if cand:
+                peaks_path = cand[0]
+                break
+        df['r_DOS'] = 0.0
+        if peaks_path is not None:
+            try:
+                from mcts_crystal.doscar_utils import DoscarRewardLookup
+                dos_dict = DoscarRewardLookup(peaks_file=str(peaks_path)).rewards_dict
+
+                F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+                import re
+                def parse_elems(s):
+                    if pd.isna(s):
+                        return []
+                    if '-' in str(s):
+                        parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
+                        return parts
+                    return re.findall(r'[A-Z][a-z]?', str(s))
+
+                dos_by_key = {}
+                for name, val in dos_dict.items():
+                    try:
+                        v = float(val)
+                    except Exception:
+                        continue
+                    elems = parse_elems(name)
+                    key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+                    if not key:
+                        continue
+                    dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), v)
+                def key_from_name(name):
+                    elems = parse_elems(name)
+                    return tuple(sorted([e for e in elems if e not in F_BLOCK]))
+                for idx, row in df.iterrows():
+                    key = key_from_name(row['name'])
+                    if key in dos_by_key:
+                        df.at[idx, 'r_DOS'] = dos_by_key[key]
+            except Exception:
+                pass
 
     # Compute the E_hull reward
     df['ehull_reward'] = df['e_above_hull'].apply(ehull_reward)
 
-    beta = 1.0
-    gamma = 2.5
+    config = load_config(str(Path(__file__).resolve().parents[2] / 'config.json'))
+    beta = float(config.get('beta', 1.0))
+    gamma = float(config.get('gamma', 0.0001))
 
     df['weighted_r_DOS'] = gamma * df['r_DOS']
     df['composite_score'] = beta * df['ehull_reward'] + df['weighted_r_DOS']

@@ -3,5 +3,5 @@
   "rollout_method": "ehull",
   "iterations": 1000,
   "beta": 1.0,
-  "gamma": 2.5
+  "gamma": 0.0001
 }

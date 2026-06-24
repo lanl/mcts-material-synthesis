@@ -19,8 +19,8 @@ Examples:
     python run_mcts.py --iterations 100                   # 100 iterations
     python run_mcts.py --structure my_structure.cif        # Custom structure
     python run_mcts.py --rollout-method ehull --mp-api-key YOUR_KEY       # E_hull only (MACE + Materials Project, no DFT/DOSCAR data needed)
-    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_rewards.csv)
-    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_rewards.csv, no MACE/MP needed)
+    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_peaks_data_with_U.csv)
+    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_peaks_data_with_U.csv, no MACE/MP needed)
     python run_mcts.py --f-block-mode lanthanides_u_extended  # Lanthanides + U, extended moves
     python run_mcts.py --exploration-constant 0.2          # Higher exploration (default: 0.1)
     python run_mcts.py --no-labels                         # Turn off labels on radial tree visualization
@@ -29,6 +29,7 @@ Examples:
 
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from typing import Optional
@@ -42,6 +43,8 @@ from .doscar_utils import DoscarRewardLookup
 from ase.io import read
 from ase import Atoms
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def load_config(config_path: str = 'config.json') -> dict:
@@ -58,10 +61,10 @@ def load_config(config_path: str = 'config.json') -> dict:
     try:
         with open(path) as f:
             config = json.load(f)
-        print(f"Loaded local config from {path}")
+        logger.info(f"Loaded local config from {path}")
         return config
     except Exception as e:
-        print(f"Warning: could not read {path}: {e}")
+        logger.warning(f"Could not read {path}: {e}")
         return {}
 
 
@@ -139,13 +142,13 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
     parser.add_argument('--rollout-method', type=str, default='ehull',
                        choices=['ehull', 'ehull_rdos', 'rdos'],
                        help='Rollout method: ehull (tanh-transformed energy above hull only; MACE + Materials Project, no DFT/DOSCAR data needed), '
-                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_rewards.csv), '
-                            'or rdos (rDOS only, looked up from doscar_rewards.csv; no MACE/Materials Project needed). '
+                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_peaks_data_with_U.csv), '
+                            'or rdos (rDOS only, computed in real time from doscar_peaks_data_with_U.csv; no MACE/Materials Project needed). '
                             'Reward: ehull -> ehull_reward(e_above_hull); ehull_rdos -> beta*ehull_reward(e_above_hull) + gamma*r_DOS; rdos -> r_DOS')
     parser.add_argument('--beta', type=float, default=1.0,
                        help='Weight for the E_hull reward when using ehull_rdos (default: 1.0)')
-    parser.add_argument('--gamma', type=float, default=2.5,
-                       help='Weight for the rDOS reward when using ehull_rdos (default: 2.5)')
+    parser.add_argument('--gamma', type=float, default=0.0001,
+                       help='Weight for the rDOS reward when using ehull_rdos (default: 0.0001)')
     parser.add_argument('--termination-limit', type=int, default=60,
                        help='Number of visits before terminating a node without improvement (default: 60)')
     parser.add_argument('--epsilon', '-e', type=float, default=0.2,
@@ -154,6 +157,8 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
     parser.add_argument('--n-rollout', type=int, default=5,
                        help='Number of rollout simulations per expansion (default: 5). Higher values increase computation per iteration.')
+    parser.add_argument('--n-workers', type=int, default=1,
+                       help='Number of worker threads to evaluate each expansion\'s rollout simulations concurrently (default: 1, i.e. sequential). Useful for ehull/ehull_rdos, where each rollout is an independent MACE relaxation + Materials Project call. For a fixed --n-workers value, --seed still reproduces identical results run-to-run (results will differ from a different --n-workers value at the same seed, since the RNG is consumed differently).')
     parser.add_argument('--seed', type=int, default=None,
                        help='Random seed for reproducibility (default: None)')
     parser.add_argument('--mp-api-key', type=str, default=None,
@@ -175,6 +180,8 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
 
 def main():
     """Main MCTS runner function."""
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
     config = load_config()
     parser = build_parser(config)
     args = parser.parse_args()
@@ -185,91 +192,91 @@ def main():
         import numpy as np
         random.seed(args.seed)
         np.random.seed(args.seed)
-        print(f"🎲 Random seed set to: {args.seed}")
+        logger.info(f"Random seed set to: {args.seed}")
 
     # Validate that MP API key is provided when needed
     methods_requiring_api_key = ['ehull', 'ehull_rdos']
     if args.rollout_method in methods_requiring_api_key and args.mp_api_key is None:
-        print(f"❌ Error: --mp-api-key is required when using rollout method '{args.rollout_method}'")
-        print(f"   Energy above hull calculations require Materials Project API access")
-        print(f"   Get your API key from: https://materialsproject.org/api")
-        print(f"   Then run with: --mp-api-key YOUR_KEY, or set \"mp_api_key\" in config.json")
+        logger.error(f"--mp-api-key is required when using rollout method '{args.rollout_method}'")
+        logger.info(f"   Energy above hull calculations require Materials Project API access")
+        logger.info(f"   Get your API key from: https://materialsproject.org/api")
+        logger.info(f"   Then run with: --mp-api-key YOUR_KEY, or set \"mp_api_key\" in config.json")
         return 1
 
-    # Check if DOSCAR rewards file exists for methods that need rDOS
+    # Check if DOSCAR peaks file exists for methods that need rDOS (rewards are
+    # always computed in real time from raw peak data - no precomputed cache)
     if args.rollout_method in ['ehull_rdos', 'rdos']:
-        doscar_file = Path("doscar_rewards.csv")
-        if not doscar_file.exists():
-            print(f"❌ Error: doscar_rewards.csv not found for rollout method '{args.rollout_method}'")
-            print(f"   This file is derived from local DFT/DOSCAR data and is not bundled with the repo")
-            print(f"   pre-release. See the README's Data Availability section for the expected schema")
-            print(f"   and how to generate it from your own DOSCAR data.")
+        peaks_file = Path("doscar_peaks_data_with_U.csv")
+        if not peaks_file.exists():
+            logger.error(f"DOSCAR peaks file (doscar_peaks_data_with_U.csv) not found for rollout method {args.rollout_method}")
+            logger.info(f"   Provide doscar_peaks_data_with_U.csv (raw peaks) in the repo root")
+            logger.info(f"   See the README's Data Availability section for the expected schema.")
             return 1
 
-    print("=" * 80)
-    print("MCTS CRYSTAL STRUCTURE OPTIMIZATION")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("MCTS CRYSTAL STRUCTURE OPTIMIZATION")
+    logger.info("=" * 80)
 
     # Step 1: Load starting crystal structure
-    print(f"\n1. Loading starting crystal structure...")
+    logger.info(f"\n1. Loading starting crystal structure...")
     structure_path = Path(args.structure)
 
     if not structure_path.exists():
-        print(f"❌ Error: Structure file not found: {structure_path}")
-        print(f"   Please check the file path or use the default structure")
+        logger.error(f"Structure file not found: {structure_path}")
+        logger.info(f"   Please check the file path or use the default structure")
         return 1
 
     try:
         atoms = read(str(structure_path))
-        print(f"   ✓ Loaded: {atoms.get_chemical_formula()}")
-        print(f"   ✓ File: {structure_path}")
-        print(f"   ✓ Atoms: {len(atoms)}")
+        logger.info(f"   Loaded: {atoms.get_chemical_formula()}")
+        logger.info(f"   File: {structure_path}")
+        logger.info(f"   Atoms: {len(atoms)}")
 
         # Override composition if requested
         if args.transition_metal is not None or args.group_iv is not None:
-            print(f"\n1.5. Overriding starting composition...")
+            logger.info(f"\n1.5. Overriding starting composition...")
             atoms = override_composition(atoms, args.transition_metal, args.group_iv)
-            print(f"   ✓ New composition: {atoms.get_chemical_formula()}")
+            logger.info(f"   New composition: {atoms.get_chemical_formula()}")
     except Exception as e:
-        print(f"❌ Error loading structure: {e}")
+        logger.error(f"Error loading structure: {e}")
         return 1
 
     # Step 2: Set up energy calculator
-    print(f"\n2. Setting up energy calculator...")
+    logger.info(f"\n2. Setting up energy calculator...")
     csv_file = Path("high_throughput_mace_results.full.csv")
 
     if not csv_file.exists():
-        print(f"❌ Error: MACE calculations file not found: {csv_file}")
-        print(f"   Please ensure high_throughput_mace_results.full.csv is in the working directory")
-        print(f"   See the README's Data Availability section for the expected schema.")
+        logger.error(f"MACE calculations file not found: {csv_file}")
+        logger.info(f"   Please ensure high_throughput_mace_results.full.csv is in the working directory")
+        logger.info(f"   See the README's Data Availability section for the expected schema.")
         return 1
 
     try:
         df = pd.read_csv(csv_file)
         energy_calc = MaceEnergyCalculator(csv_file=str(csv_file), mp_api_key=args.mp_api_key)
-        print(f"   ✓ Cached calculations: {len(df)} entries")
-        print(f"   ✓ Energy range: {df['e_form'].min():.3f} to {df['e_form'].max():.3f} eV/atom")
+        logger.info(f"   Cached calculations: {len(df)} entries")
+        logger.info(f"   Energy range: {df['e_form'].min():.3f} to {df['e_form'].max():.3f} eV/atom")
         if args.mp_api_key:
-            print(f"   ✓ Materials Project API key provided")
+            logger.info(f"   Materials Project API key provided")
         else:
-            print(f"   ⚠ No MP API key - energy above hull will be approximate (e_above_hull = e_form)")
+            logger.warning(f"   No MP API key - energy above hull will be approximate (e_above_hull = e_form)")
     except Exception as e:
-        print(f"❌ Error setting up energy calculator: {e}")
+        logger.error(f"Error setting up energy calculator: {e}")
         return 1
 
     # Load DOSCAR rewards if this rollout method uses rDOS
     doscar_lookup = None
     if args.rollout_method in ['ehull_rdos', 'rdos']:
-        print(f"\n2.5. Loading DOSCAR rewards...")
+        logger.info(f"\n2.5. Loading DOSCAR rewards...")
         try:
             doscar_lookup = DoscarRewardLookup()
         except Exception as e:
-            print(f"❌ Error loading DOSCAR rewards: {e}")
-            print(f"   Cannot continue without DOSCAR rewards for '{args.rollout_method}' method")
+            logger.error(f"Error loading DOSCAR rewards: {e}")
+            logger.error(f"   Cannot continue without DOSCAR rewards for '{args.rollout_method}' method")
             return 1
 
     # Step 3: Initialize MCTS
-    print(f"\n3. Initializing MCTS algorithm...")
+    logger.info(f"\n3. Initializing MCTS algorithm...")
     try:
         root_node = MCTSTreeNode(atoms, f_block_mode=args.f_block_mode,
                                 exploration_constant=args.exploration_constant,
@@ -282,39 +289,40 @@ def main():
 
         mcts = MCTS(root_node, epsilon=args.epsilon)
 
-        print(f"   ✓ Root compound: {root_node.get_chemical_formula()}")
-        print(f"   ✓ Root E_form: {root_e_form:.4f} eV/atom")
-        print(f"   ✓ Root E_hull: {root_e_hull:.4f} eV/atom")
-        print(f"   ✓ F-block mode: {args.f_block_mode}")
-        print(f"   ✓ Exploration constant: {args.exploration_constant}")
-        print(f"   ✓ Epsilon (exploration rate): {args.epsilon}")
-        print(f"   ✓ Termination limit: {args.termination_limit}")
+        logger.info(f"   Root compound: {root_node.get_chemical_formula()}")
+        logger.info(f"   Root E_form: {root_e_form:.4f} eV/atom")
+        logger.info(f"   Root E_hull: {root_e_hull:.4f} eV/atom")
+        logger.info(f"   F-block mode: {args.f_block_mode}")
+        logger.info(f"   Exploration constant: {args.exploration_constant}")
+        logger.info(f"   Epsilon (exploration rate): {args.epsilon}")
+        logger.info(f"   Termination limit: {args.termination_limit}")
 
         # Show search space
         root_node.expand()
-        print(f"   ✓ Search space: {len(root_node.expansion_list)} possible moves")
-        print(f"   ✓ Transition metals: {len(root_node.metal_move)} options")
-        print(f"   ✓ Group IV elements: {len(root_node.g_iv_move)} options")
+        logger.info(f"   Search space: {len(root_node.expansion_list)} possible moves")
+        logger.info(f"   Transition metals: {len(root_node.metal_move)} options")
+        logger.info(f"   Group IV elements: {len(root_node.g_iv_move)} options")
         if hasattr(root_node, 'f_block_move'):
             if args.f_block_mode == 'u_only':
-                print(f"   ✓ F-block elements: {len(root_node.f_block_move)} options (U-only mode)")
+                logger.info(f"   F-block elements: {len(root_node.f_block_move)} options (U-only mode)")
             else:
-                print(f"   ✓ F-block elements: {len(root_node.f_block_move)} options (full f-block)")
+                logger.info(f"   F-block elements: {len(root_node.f_block_move)} options (full f-block)")
 
     except Exception as e:
-        print(f"❌ Error initializing MCTS: {e}")
+        logger.error(f"Error initializing MCTS: {e}")
         return 1
 
     # Step 4: Run MCTS optimization
-    print(f"\n4. Running MCTS optimization...")
-    print(f"   Iterations: {args.iterations}")
-    print(f"   Rollout method: {args.rollout_method}")
-    print(f"   Rollout depth: {args.rollout_depth}")
-    print(f"   Number of rollouts: {args.n_rollout}")
+    logger.info(f"\n4. Running MCTS optimization...")
+    logger.info(f"   Iterations: {args.iterations}")
+    logger.info(f"   Rollout method: {args.rollout_method}")
+    logger.info(f"   Rollout depth: {args.rollout_depth}")
+    logger.info(f"   Number of rollouts: {args.n_rollout}")
+    logger.info(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
-        print(f"   Beta (E_hull weight, ehull_reward = -tanh(300*(E_hull-0.05))): {args.beta}")
-        print(f"   Gamma (rDOS weight): {args.gamma}")
-    print(f"   This may take several minutes depending on cache hit rate...")
+        logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(120*(E_hull-0.05))): {args.beta}")
+        logger.info(f"   Gamma (rDOS weight): {args.gamma}")
+    logger.info(f"   This may take several minutes depending on cache hit rate...")
 
     try:
         results = mcts.run(
@@ -326,36 +334,37 @@ def main():
             rollout_method=args.rollout_method,
             beta=args.beta,
             gamma=args.gamma,
-            doscar_lookup=doscar_lookup
+            doscar_lookup=doscar_lookup,
+            n_workers=args.n_workers
         )
 
-        print(f"   ✓ Completed: {results['iterations_completed']} iterations")
-        print(f"   ✓ Compounds explored: {len(results['stat_dict'])}")
-        print(f"   ✓ Search terminated: {results['terminated']}")
+        logger.info(f"   Completed: {results['iterations_completed']} iterations")
+        logger.info(f"   Compounds explored: {len(results['stat_dict'])}")
+        logger.info(f"   Search terminated: {results['terminated']}")
 
     except Exception as e:
-        print(f"❌ Error during MCTS run: {e}")
+        logger.error(f"Error during MCTS run: {e}")
         return 1
 
     # Step 5: Analyze results
-    print(f"\n5. Analyzing results...")
+    logger.info(f"\n5. Analyzing results...")
     try:
         analyzer = ResultsAnalyzer(csv_file=str(csv_file))
 
         # Get efficiency metrics
         efficiency = analyzer.analyze_search_efficiency(mcts.stat_dict)
 
-        print(f"   ✓ Best formation energy: {efficiency['best_formation_energy']:.4f} eV/atom")
-        print(f"   ✓ Best compound: {results['best_node_formula']}")
-        print(f"   ✓ Compounds within 100 meV of hull: {efficiency['compounds_near_hull_100meV']}")
-        print(f"   ✓ Search efficiency: {efficiency['search_diversity']:.4f}")
+        logger.info(f"   Best formation energy: {efficiency['best_formation_energy']:.4f} eV/atom")
+        logger.info(f"   Best compound: {results['best_node_formula']}")
+        logger.info(f"   Compounds within 100 meV of hull: {efficiency['compounds_near_hull_100meV']}")
+        logger.info(f"   Search efficiency: {efficiency['search_diversity']:.4f}")
 
     except Exception as e:
-        print(f"❌ Error analyzing results: {e}")
+        logger.error(f"Error analyzing results: {e}")
         return 1
 
     # Step 6: Save results
-    print(f"\n6. Saving results...")
+    logger.info(f"\n6. Saving results...")
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -363,63 +372,17 @@ def main():
     try:
         mcts.save_convergence_history(str(output_dir / "convergence_history.csv"))
     except Exception as e:
-        print(f"Warning: Could not save convergence history: {e}")
+        logger.warning(f"Could not save convergence history: {e}")
 
     try:
         # Create visualizations
         visualizer = TreeVisualizer()
 
-        # Radial tree visualization
-        visualizer.plot_radial_tree_visualization(
-            mcts,
-            output_dir=str(output_dir),
-            csv_file=str(csv_file),
-            show_labels=not args.no_labels
-        )
+        # Radial tree visualization generation disabled (use composite radial tree instead)
 
-        # Energy distribution plot
-        visualizer.plot_energy_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Iteration progress plot
-        visualizer.plot_iteration_progress(
-            mcts,
-            save_path=output_dir / "iteration_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull distribution plot
-        visualizer.plot_energy_above_hull_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_above_hull_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull iteration progress plot
-        visualizer.plot_energy_above_hull_progress(
-            mcts,
-            save_path=output_dir / "energy_above_hull_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Formation energy by elements plot
-        visualizer.plot_formation_energy_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "formation_energy_by_elements.png"
-        )
-
-        # Energy above hull by elements plot
-        visualizer.plot_energy_above_hull_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "energy_above_hull_by_elements.png"
-        )
+        # Skipping some auxiliary visualizations per publication configuration
+        # (energy_distribution, iteration_progress, energy_above_hull_*, formation_energy_by_elements)
+        # Only essential visualizations are generated to avoid duplicate/unused figures.
 
         # Generate reports
         analyzer.create_summary_report(
@@ -436,10 +399,10 @@ def main():
         # Get and display top compounds
         top_compounds = analyzer.get_top_compounds(mcts.stat_dict, n_top=10)
 
-        print(f"   ✓ Results saved to: {output_dir.absolute()}")
+        logger.info(f"   Results saved to: {output_dir.absolute()}")
 
     except Exception as e:
-        print(f"❌ Error saving results: {e}")
+        logger.error(f"Error saving results: {e}")
         # Don't return early - still save MCTS pickle below
 
     # Save MCTS object for later visualization (outside try-except to ensure it always runs)
@@ -448,47 +411,47 @@ def main():
         mcts_pickle_path = output_dir / "mcts_object.pkl"
         with open(mcts_pickle_path, 'wb') as f:
             pickle.dump(mcts, f)
-        print(f"   ✓ MCTS object saved to: {mcts_pickle_path}")
+        logger.info(f"   MCTS object saved to: {mcts_pickle_path}")
     except Exception as e:
-        print(f"❌ Error saving MCTS pickle: {e}")
+        logger.error(f"Error saving MCTS pickle: {e}")
 
     # Step 7: Display summary
-    print(f"\n" + "=" * 80)
-    print("🎯 MCTS OPTIMIZATION COMPLETED SUCCESSFULLY!")
-    print("=" * 80)
-    print(f"🥇 Best compound: {results['best_node_formula']}")
-    print(f"⚡ Formation energy: {results['best_node_e_form']:.4f} eV/atom")
-    print(f"🔍 Total compounds explored: {len(results['stat_dict'])}")
-    print(f"📁 Results directory: {output_dir.absolute()}")
+    logger.info(f"\n" + "=" * 80)
+    logger.info("MCTS OPTIMIZATION COMPLETED SUCCESSFULLY")
+    logger.info("=" * 80)
+    logger.info(f"Best compound: {results['best_node_formula']}")
+    logger.info(f"Formation energy: {results['best_node_e_form']:.4f} eV/atom")
+    logger.info(f"Total compounds explored: {len(results['stat_dict'])}")
+    logger.info(f"Results directory: {output_dir.absolute()}")
 
-    print(f"\n🏆 TOP 10 COMPOUNDS DISCOVERED:")
-    print("-" * 60)
+    logger.info(f"\nTOP 10 COMPOUNDS DISCOVERED:")
+    logger.info("-" * 60)
     for i, (_, row) in enumerate(top_compounds.iterrows(), 1):
         stability = "Stable" if row['e_above_hull'] < 0.1 else "Metastable"
-        print(f"{i:2d}. {row['formula']:15s} | "
-              f"E_form: {row['formation_energy']:8.4f} eV/atom | "
-              f"{stability}")
+        logger.info(f"{i:2d}. {row['formula']:15s} | "
+                    f"E_form: {row['formation_energy']:8.4f} eV/atom | "
+                    f"{stability}")
 
-    print(f"\n📊 FILES CREATED:")
-    print(f"   • radial_tree_visualization.png - Tree structure with formation energies")
-    print(f"   • energy_distribution.png - Formation energy distribution")
-    print(f"   • iteration_progress.png - Search progress over iterations")
-    print(f"   • energy_above_hull_distribution.png - Energy above hull distribution")
-    print(f"   • energy_above_hull_progress.png - Energy above hull search progress")
-    print(f"   • formation_energy_by_elements.png - Formation energy by transition metal/Group IV")
-    print(f"   • energy_above_hull_by_elements.png - Energy above hull by transition metal/Group IV")
-    print(f"   • mcts_report.txt - Detailed text report")
-    print(f"   • all_compounds.csv - All discovered compounds data")
+    logger.info(f"\nFILES CREATED:")
+    logger.info(f"   - radial_tree_visualization.png - Tree structure with formation energies")
+    logger.info(f"   - energy_distribution.png - Formation energy distribution")
+    logger.info(f"   - iteration_progress.png - Search progress over iterations")
+    logger.info(f"   - energy_above_hull_distribution.png - Energy above hull distribution")
+    logger.info(f"   - energy_above_hull_progress.png - Energy above hull search progress")
+    logger.info(f"   - formation_energy_by_elements.png - Formation energy by transition metal/Group IV")
+    logger.info(f"   - energy_above_hull_by_elements.png - Energy above hull by transition metal/Group IV")
+    logger.info(f"   - mcts_report.txt - Detailed text report")
+    logger.info(f"   - all_compounds.csv - All discovered compounds data")
 
-    print(f"\n💡 To run again:")
-    print(f"   python run_mcts.py --iterations {args.iterations}")
-    print(f"   python run_mcts.py --iterations 1000  # Longer search")
-    print(f"   python run_mcts.py --structure my_file.cif  # Different starting material")
-    print(f"   python run_mcts.py --f-block-mode lanthanides_u_extended  # Fast exploration of heavy lanthanides")
-    print(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5  # E_hull + rDOS")
-    print(f"   python run_mcts.py -c 0.2  # Higher exploration constant")
+    logger.info(f"\nTo run again:")
+    logger.info(f"   python run_mcts.py --iterations {args.iterations}")
+    logger.info(f"   python run_mcts.py --iterations 1000  # Longer search")
+    logger.info(f"   python run_mcts.py --structure my_file.cif  # Different starting material")
+    logger.info(f"   python run_mcts.py --f-block-mode lanthanides_u_extended  # Fast exploration of heavy lanthanides")
+    logger.info(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001  # E_hull + rDOS")
+    logger.info(f"   python run_mcts.py -c 0.2  # Higher exploration constant")
 
-    print("=" * 80)
+    logger.info("=" * 80)
 
     return 0
 

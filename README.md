@@ -39,7 +39,7 @@ The core install (no `[full]`) is intentionally lightweight: `rollout-method rdo
 Once installed, you get a console command in addition to the script entry point:
 
 ```bash
-mcts-run --rollout-method ehull_rdos --beta 1.0 --gamma 2.5   # equivalent to: python run_mcts.py --rollout-method ehull_rdos ...
+mcts-run --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001   # equivalent to: python run_mcts.py --rollout-method ehull_rdos ...
 ```
 
 ### Setup
@@ -72,7 +72,7 @@ Without `config.json`, pass the key explicitly:
 python run_mcts.py --mp-api-key YOUR_API_KEY
 ```
 
-The default rollout method is `ehull`, which needs the Materials Project API key but no DOSCAR data. To run with no API key at all, use `--rollout-method rdos` (requires `doscar_rewards.csv`).
+The default rollout method is `ehull`, which needs the Materials Project API key but no DOSCAR data. To run with no API key at all, use `--rollout-method rdos` (requires `doscar_peaks_data_with_U.csv`).
 
 This will:
 - Use the default starting structure (`examples/mat_Pb6U1W6_sg191.cif`)
@@ -87,7 +87,7 @@ This will:
 python run_mcts.py --iterations 1000 --rollout-method ehull
 
 # E_hull + rDOS (the published study's reward)
-python run_mcts.py --iterations 1000 --rollout-method ehull_rdos --beta 1.0 --gamma 2.5
+python run_mcts.py --iterations 1000 --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001
 
 # rDOS only
 python run_mcts.py --iterations 1000 --rollout-method rdos
@@ -114,7 +114,7 @@ To reproduce the published U-only `ehull_rdos` study and its figures end to end,
 |-----------|---------|---------|-------------|
 | `--rollout-method` | `ehull` | `ehull`, `ehull_rdos`, `rdos` | Rollout evaluation method |
 | `--beta` | 1.0 | float | Weight for the E_hull reward in `ehull_rdos` |
-| `--gamma` | 2.5 | float | Weight for the rDOS reward in `ehull_rdos` |
+| `--gamma` | 0.0001 | float | Weight for the rDOS reward in `ehull_rdos` |
 | `--mp-api-key` | None | string | Materials Project API key (required for `ehull`, `ehull_rdos`; prefer `config.json`) |
 | `--exploration-constant` | 0.1 | float | UCB exploration constant (higher = more exploration vs exploitation) |
 | `--f-block-mode` | `u_only` | `u_only`, `full_f_block`, `experimental`, `lanthanides_u`, `lanthanides_u_extended` | F-block element substitution strategy |
@@ -125,18 +125,18 @@ To reproduce the published U-only `ehull_rdos` study and its figures end to end,
 ### Rollout Method Details
 
 - **`ehull` (default)**: Sharp tanh-transformed energy above hull
-  - `ehull_reward(E_hull) = -tanh(300 * (E_hull - 0.05))` — a sharp transition around the 0.05 eV/atom stability threshold (≈+1 for stable compounds, ≈-1 for unstable ones)
+  - `ehull_reward(E_hull) = -tanh(120 * (E_hull - 0.05))` — a sharp transition around the 0.05 eV/atom stability threshold (≈+1 for stable compounds, ≈-1 for unstable ones)
   - Reward = `ehull_reward(E_hull)`
   - **Requires a Materials Project API key. Does not require DOSCAR/DFT data.**
 
 - **`ehull_rdos`**: E_hull + electronic density-of-states reward, the formulation used in the published study
   - Reward = `beta * ehull_reward(E_hull) + gamma * r_DOS`
-  - Default `beta=1.0`, `gamma=2.5`
-  - **Requires a Materials Project API key and `doscar_rewards.csv`.**
+  - Default `beta=1.0`, `gamma=0.0001`
+  - **Requires a Materials Project API key and `doscar_peaks_data_with_U.csv`.**
 
 - **`rdos`**: DOSCAR-derived electronic structure reward only
-  - Reward = `r_DOS`, looked up directly from `doscar_rewards.csv`
-  - **Requires `doscar_rewards.csv`. Does not require MACE or a Materials Project API key.**
+  - Reward = `r_DOS`, computed in real time from `doscar_peaks_data_with_U.csv`
+  - **Requires `doscar_peaks_data_with_U.csv`. Does not require MACE or a Materials Project API key.**
 
 Formation energy (`e_form`) is always computed and logged on every node and in every output CSV for reference, but it is not part of any of the three rewards above.
 
@@ -154,7 +154,7 @@ The Materials Project API is used to calculate **energy above hull**, which meas
 
 **What happens without an API key?**
 - If you try to use `ehull` or `ehull_rdos` without an API key, the script will exit with an error
-- Use `--rollout-method rdos` to run without an API key (still requires `doscar_rewards.csv`)
+- Use `--rollout-method rdos` to run without an API key (still requires `doscar_peaks_data_with_U.csv`)
 
 ### F-Block Substitution Modes
 
@@ -191,8 +191,7 @@ This repository ships **no proprietary DFT/DOSCAR data**. The high-throughput en
 | File (repo root) | Required by | Schema |
 |---|---|---|
 | `high_throughput_mace_results.full.csv` | all rollout methods | CSV with columns `name` (chemical formula, e.g. `Ti6Si6Ce`), `e_form` (eV/atom), `e_above_hull` (eV/atom), `e_decomp` (eV/atom), `source` (free text) |
-| `doscar_rewards.csv` | `ehull_rdos`, `rdos` | CSV mapping chemical formula to a precomputed rDOS value (Gaussian-weighted sum of DOS peak intensity near the Fermi level — see `mcts_crystal/doscar_utils.py:DoscarRewardLookup`) |
-| `shunshun_mace_predictions_with_elements.csv` (repo root) | `examples/ehull_rdos_u_only_study/prepare_sg191_composite_data.py` only | CSV of all SG191 RM₆X₆ reference compounds with `Predicted_formation_energy (eV/atom)`, `energy_above_hull`, `Space_group` columns; used only to draw a comparison background scatter, not required to run MCTS itself |
+| `doscar_peaks_data_with_U.csv` | `ehull_rdos`, `rdos` | Raw DOSCAR peak data (`COMPOUND_NAME`, `PEAK_ENERGY`, `PEAK_WIDTH`, `PEAK_HEIGHT`). rDOS is always computed in real time from this file (Gaussian-weighted sum of peak intensity near the Fermi level — see `mcts_crystal/doscar_utils.py:DoscarRewardLookup`); there is no precomputed rewards cache |
 
 If you don't have these files, `run_mcts.py` will exit with a clear error naming the missing file rather than silently degrading. Once the underlying high-throughput study is released, these files will be published alongside it — check the paper / repo announcements for the data DOI.
 
@@ -280,18 +279,18 @@ mcts_materials/
 │   ├── mat_Pb6U1W6_sg191.cif      # Default starting structure
 │   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures
 ├── high_throughput_mace_results.full.csv  # NOT bundled - see Data Availability
-└── doscar_rewards.csv                      # NOT bundled - see Data Availability
+└── doscar_peaks_data_with_U.csv            # NOT bundled - see Data Availability
 ```
 
 ## Reproducing the Published Study
 
-`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 2.5`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
+`examples/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (`--rollout-method ehull_rdos --beta 1.0 --gamma 0.0001`, U-only f-block mode, 150 iterations from a Pb₆U₁W₆ starting structure):
 
 - `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
 - `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, SG191 comparison, convergence plot, composite-colored radial tree) from the run's output
 - Individual `prepare_*.py` / `plot_*.gnuplot` pairs for each figure, plus `generate_top10_report.py` for the ranked compound list
 
-This requires `high_throughput_mace_results.full.csv` and `doscar_rewards.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
+This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
 
 ## Algorithm Details
 
@@ -325,7 +324,7 @@ Search terminates when:
 ## Tips for Effective Use
 
 1. **Get a Materials Project API key** for `ehull` or `ehull_rdos`, and put it in `config.json` (gitignored) rather than passing it on the command line repeatedly
-2. **Use `rdos`** if you don't have a Materials Project API key but do have `doscar_rewards.csv`
+2. **Use `rdos`** if you don't have a Materials Project API key but do have `doscar_peaks_data_with_U.csv`
 3. **Start with default parameters** to understand baseline behavior
 4. **Use `ehull_rdos`** (the published study's method) for balanced stability + electronic-structure optimization
 5. **Increase `--gamma`** to prioritize electronic structure (rDOS) over hull stability, or `--beta` for the reverse

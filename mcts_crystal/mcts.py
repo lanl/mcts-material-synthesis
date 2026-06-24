@@ -2,12 +2,35 @@
 Monte Carlo Tree Search implementation for crystal structure optimization.
 """
 
+import logging
 import random
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Tuple, Optional
 from .node import MCTSTreeNode
+
+logger = logging.getLogger(__name__)
+
+# stat_dict entries gained a 6th element (dos_reward) after rDOS support was added;
+# older runs/pickles may still have only the original 5.
+_STAT_DICT_COLUMNS = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
+_STAT_DICT_COLUMNS_WITH_DOS = _STAT_DICT_COLUMNS + ['dos_reward']
+
+
+def stat_dict_to_dataframe(stat_dict: Dict) -> pd.DataFrame:
+    """
+    Convert an MCTS stat_dict (formula -> [best_reward, visit_count, terminated,
+    e_above_hull, e_form, (dos_reward)]) into a DataFrame with those column names,
+    indexed by formula. Handles both the 5-element (no dos_reward) and 6-element
+    stat_dict formats, and an empty stat_dict (returned as an empty DataFrame,
+    unchanged, since there are no columns to rename).
+    """
+    df = pd.DataFrame(stat_dict).T
+    if df.empty:
+        return df
+    df.columns = _STAT_DICT_COLUMNS_WITH_DOS if df.shape[1] == 6 else _STAT_DICT_COLUMNS
+    return df
 
 
 class MCTS:
@@ -153,7 +176,7 @@ class MCTS:
         if n_extra <= 0:
             return rewards
 
-        scale = 1 - 0.1 * rollout_depth
+        scale = 0.9 ** rollout_depth
 
         if n_workers <= 1:
             for _ in range(n_extra):
@@ -189,7 +212,7 @@ class MCTS:
 
     def expansion_simulation(self, rollout_depth: int = 1, n_rollout: int = 1,
                            energy_calculator=None, rollout_method: str = 'ehull',
-                           beta: float = 1.0, gamma: float = 2.5,
+                           beta: float = 1.0, gamma: float = 0.0001,
                            doscar_lookup=None, n_workers: int = 1) -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
@@ -200,7 +223,7 @@ class MCTS:
             energy_calculator: Energy calculator instance
             rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
-            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
             n_workers: Number of worker threads for the n_rollout samples
                 (default: 1, i.e. sequential, identical to prior behavior)
@@ -241,10 +264,10 @@ class MCTS:
             # E_hull only (tanh-transformed), no DFT/DOSCAR data required
             mode = 'ehull'
         elif rollout_method == 'ehull_rdos':
-            # E_hull (tanh-transformed) + rDOS, requires doscar_rewards.csv
+            # E_hull (tanh-transformed) + rDOS, requires doscar_peaks_data_with_U.csv
             mode = f'ehull_rdos_{beta}_{gamma}'
         elif rollout_method == 'rdos':
-            # rDOS only, requires doscar_rewards.csv, no MACE/Materials Project needed
+            # rDOS only, requires doscar_peaks_data_with_U.csv, no MACE/Materials Project needed
             mode = 'rdos'
         else:
             raise ValueError(f"Unknown rollout_method: {rollout_method}")
@@ -323,7 +346,7 @@ class MCTS:
     def run(self, n_iterations: int, energy_calculator=None,
             rollout_depth: int = 1, n_rollout: int = 10,
             selection_mode: str = 'epsilon', rollout_method: str = 'ehull',
-            beta: float = 1.0, gamma: float = 2.5,
+            beta: float = 1.0, gamma: float = 0.0001,
             doscar_lookup=None, n_workers: int = 1) -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
@@ -336,7 +359,7 @@ class MCTS:
             selection_mode: Node selection mode
             rollout_method: Rollout evaluation method ('ehull', 'ehull_rdos', or 'rdos')
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
-            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 2.5)
+            gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
                   'ehull':      reward = ehull_reward(e_above_hull)
                   'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
@@ -472,13 +495,8 @@ class MCTS:
         Returns:
             DataFrame with statistics
         """
-        stat_df = pd.DataFrame(self.stat_dict).T
+        stat_df = stat_dict_to_dataframe(self.stat_dict)
         if not stat_df.empty:
-            # Handle both 5-element (old) and 6-element (new with dos_reward) stat_dict
-            if stat_df.shape[1] == 6:
-                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form', 'dos_reward']
-            else:
-                stat_df.columns = ['best_reward', 'visit_count', 'terminated', 'e_above_hull', 'e_form']
             stat_df = stat_df.sort_values(by='visit_count', ascending=False)
         return stat_df
         
@@ -522,7 +540,7 @@ class MCTS:
         convergence_df = self._postprocess_convergence_energies(convergence_df)
 
         convergence_df.to_csv(filename, index=False)
-        print(f"Saved convergence history to {filename}")
+        logger.info(f"Saved convergence history to {filename}")
 
     def _postprocess_convergence_energies(self, df: pd.DataFrame) -> pd.DataFrame:
         """
