@@ -16,7 +16,7 @@ if not all_csv.exists():
     sys.exit(1)
 
 def ehull_reward(e_hull):
-    return -np.tanh(300.0 * (e_hull - 0.05))
+    return -np.tanh(120.0 * (e_hull - 0.05))
 
 print('Loading', all_csv)
 df = pd.read_csv(all_csv)
@@ -29,28 +29,26 @@ else:
 if 'dos_reward' in df.columns:
     df['r_DOS'] = df['dos_reward']
 else:
-    # attempt to compute r_DOS from a nearby doscar_rewards.csv using element-set keys
+    # compute r_DOS in real time from a nearby doscar_peaks_data_with_U.csv (no
+    # precomputed rewards cache), matched via element-set keys
     MAX_PARENT_DEPTH = 4
     search_roots = [out_dir] + list(out_dir.parents)[:MAX_PARENT_DEPTH]
-    dos_path = None
+    peaks_path = None
     for r in search_roots:
         try:
-            cand = list(Path(r).rglob('doscar_rewards.csv'))
+            cand = list(Path(r).rglob('doscar_peaks_data_with_U.csv'))
         except OSError:
             cand = []
         if cand:
-            dos_path = cand[0]
+            peaks_path = cand[0]
             break
     df['r_DOS'] = 0.0
-    if dos_path is not None:
+    if peaks_path is not None:
         try:
-            df_dos = pd.read_csv(dos_path)
-            if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
-                dos_iter = zip(df_dos['compound_name'], df_dos['reward_normalized'])
-            elif df_dos.shape[1] >= 2:
-                dos_iter = zip(df_dos.iloc[:,0], df_dos.iloc[:,1])
-            else:
-                dos_iter = []
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+            from mcts_crystal.doscar_utils import DoscarRewardLookup
+            dos_dict = DoscarRewardLookup(peaks_file=str(peaks_path)).rewards_dict
+
             F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
             import re
             def parse_elems(s):
@@ -61,7 +59,7 @@ else:
                     return parts
                 return re.findall(r'[A-Z][a-z]?', str(s))
             dos_by_key = {}
-            for name, val in dos_iter:
+            for name, val in dos_dict.items():
                 try:
                     v = float(val)
                 except Exception:
@@ -160,11 +158,12 @@ else:
 
 # ehull vs rdos using repo-root cache
 repo_root = Path('..')
-if (repo_root / 'high_throughput_mace_results.full.csv').exists() and (repo_root / 'doscar_rewards.csv').exists():
+if (repo_root / 'high_throughput_mace_results.full.csv').exists() and (repo_root / 'doscar_peaks_data_with_U.csv').exists():
     print('Plotting ehull vs rdos')
     df_mace = pd.read_csv(repo_root / 'high_throughput_mace_results.full.csv')
-    df_dos = pd.read_csv(repo_root / 'doscar_rewards.csv')
-    dos_dict = dict(zip(df_dos['compound_name'], df_dos['reward_normalized']))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from mcts_crystal.doscar_utils import DoscarRewardLookup
+    dos_dict = DoscarRewardLookup(peaks_file=str(repo_root / 'doscar_peaks_data_with_U.csv')).rewards_dict
     def has_element(name, elem):
         import re
         pattern = r'(?<![a-z])' + elem + r'(?![a-z])'
@@ -192,6 +191,6 @@ if (repo_root / 'high_throughput_mace_results.full.csv').exists() and (repo_root
     fig.savefig(out_dir / 'ehull_vs_rdos.png', dpi=300)
     plt.close(fig)
 else:
-    print('Skipping ehull_vs_rdos: missing cache or doscar_rewards.csv')
+    print('Skipping ehull_vs_rdos: missing cache or doscar_peaks_data_with_U.csv')
 
 print('Done')

@@ -53,10 +53,10 @@ class TestExpansionSimulation:
             rollout_depth=0, n_rollout=1,
             energy_calculator=StubEnergyCalculator(),
             rollout_method='ehull_rdos',
-            beta=1.0, gamma=2.5,
+            beta=1.0, gamma=0.0001,
             doscar_lookup=StubDoscarLookup(reward=0.3),
         )
-        assert reward == pytest.approx(1.0 * ehull_reward(0.02) + 2.5 * 0.3)
+        assert reward == pytest.approx(1.0 * ehull_reward(0.02) + 0.0001 * 0.3)
 
     def test_rdos_only_ignores_energy_calculator(self, root_node):
         mcts = MCTS(root_node)
@@ -89,7 +89,7 @@ class TestRunIntegration:
             n_rollout=1,
             rollout_method=rollout_method,
             beta=1.0,
-            gamma=2.5,
+            gamma=0.0001,
             doscar_lookup=StubDoscarLookup(),
         )
         assert results['iterations_completed'] >= 1

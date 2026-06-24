@@ -11,9 +11,9 @@ def ehull_reward(e_hull: float) -> float:
     """
     Sharp tanh-based reward for energy above hull.
 
-    Uses f(E_hull) = -tanh(300 * (E_hull - 0.05))
+    Uses f(E_hull) = -tanh(120 * (E_hull - 0.05))
 
-    This gives a very sharp transition around 0.05 eV/atom:
+    This gives a sharp transition around 0.05 eV/atom:
     - At E_hull = 0.05: reward = 0 (boundary)
     - At E_hull = 0 (stable): reward ≈ +1 (favorable)
     - At E_hull = 0.1 (unstable): reward ≈ -1 (unfavorable)
@@ -24,7 +24,7 @@ def ehull_reward(e_hull: float) -> float:
     Returns:
         Reward value in range [-1, +1]
     """
-    return -np.tanh(300.0 * (e_hull - 0.05))
+    return -np.tanh(120.0 * (e_hull - 0.05))
 
 
 class MCTSTreeNode:
@@ -307,8 +307,8 @@ class MCTSTreeNode:
             energy_calculator: Energy calculator instance (required for 'ehull'/'ehull_rdos', unused for 'rdos')
             mode: Evaluation mode. One of:
                 - 'ehull': reward = ehull_reward(e_above_hull) (MACE + Materials Project, no DFT/DOSCAR data needed)
-                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_rewards.csv)
-                - 'rdos': reward = r_DOS only, looked up from doscar_rewards.csv (no MACE/Materials Project needed)
+                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_peaks_data_with_U.csv)
+                - 'rdos': reward = r_DOS only, computed in real time from doscar_peaks_data_with_U.csv (no MACE/Materials Project needed)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR-derived rDOS rewards
             rng: Random source to draw substitutions from (anything exposing .choice(),
                 e.g. a random.Random instance). Defaults to the shared `random` module,

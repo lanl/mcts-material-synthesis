@@ -13,8 +13,9 @@ It expects to be run from `analysis/ehull_rdos_u_only_study/` where the MCTS
 run outputs (`all_compounds.csv`, `convergence_history.csv`, `mcts_object.pkl`) are
 present (the example `run_study.sh` places them there). It also expects the
 high-throughput cache `high_throughput_mace_results.full.csv` and
-`doscar_rewards.csv` to be available at the repository root for the
-`ehull_vs_rdos` figure if the analysis CSV is not present.
+`doscar_peaks_data_with_U.csv` to be available at the repository root for the
+`ehull_vs_rdos` figure if the analysis CSV is not present (rDOS is always
+computed in real time from the raw peaks file - no precomputed rewards cache).
 """
 
 from pathlib import Path
@@ -59,7 +60,7 @@ def compute_composite(df, beta=1.0, gamma=None):
         # Fallback: define local ehull_reward matching mcts_crystal.node implementation
         def ehull_reward(e_hull: float) -> float:
             import numpy as _np
-            return -_np.tanh(300.0 * (e_hull - 0.05))
+            return -_np.tanh(120.0 * (e_hull - 0.05))
     df = df.copy()
     df['name'] = df.get('formula', df.get('name'))
     # ensure r_DOS is computed from canonical doscar rewards if not present
@@ -110,7 +111,8 @@ def compute_composite(df, beta=1.0, gamma=None):
 
 
 def load_master_mace(repo_root: Path):
-    """Load canonical high-throughput MACE CSV and DOS rewards (if present).
+    """Load canonical high-throughput MACE CSV and DOS rewards (computed in real
+    time from raw peak data - there is no precomputed rewards cache).
     Returns (df_mace, dos_by_key) where dos_by_key maps element-set keys to reward.
     """
     # Prefer the file in this repo; only search parent/sibling folders as a fallback
@@ -140,14 +142,10 @@ def load_master_mace(repo_root: Path):
         except Exception:
             df_mace = None
 
-    # Load doscar rewards if available (prefer local repo copy)
-    doscar_csv = find_canonical('doscar_rewards.csv')
-    df_dos = None
-    if doscar_csv.exists():
-        try:
-            df_dos = pd.read_csv(doscar_csv)
-        except Exception:
-            df_dos = None
+    # Compute DOS rewards in real time from the raw peaks file (prefer local repo copy)
+    from mcts_crystal.doscar_utils import DoscarRewardLookup
+    peaks_csv = find_canonical('doscar_peaks_data_with_U.csv')
+    dos_dict = DoscarRewardLookup(peaks_file=str(peaks_csv)).rewards_dict
 
     F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
 
@@ -159,26 +157,17 @@ def load_master_mace(repo_root: Path):
             return parts
         return re.findall(r'[A-Z][a-z]?', str(s))
 
-    if df_dos is not None:
-        # build name->reward mapping then collapse to element-set keys (ignore f-block differences)
-        # Prefer `reward_normalized` when present; fall back to the second column otherwise.
-        if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
-            dos_iter = zip(df_dos['compound_name'], df_dos['reward_normalized'])
-        elif df_dos.shape[1] >= 2:
-            dos_iter = zip(df_dos.iloc[:, 0], df_dos.iloc[:, 1])
-        else:
-            dos_iter = []
-
-        for name, val in dos_iter:
-            try:
-                v = float(val)
-            except Exception:
-                continue
-            elems = parse_elems(name)
-            key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
-            if not key:
-                continue
-            dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), float(v))
+    # collapse compound_name -> reward into element-set keys (ignore f-block differences)
+    for name, val in dos_dict.items():
+        try:
+            v = float(val)
+        except Exception:
+            continue
+        elems = parse_elems(name)
+        key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
+        if not key:
+            continue
+        dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), float(v))
 
     return df_mace, dos_by_key
 
@@ -249,23 +238,10 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
         except Exception:
             df_mace = None
 
-        # Attempt to attach r_DOS via any doscar rewards file if present
-        doscar_csv = find_canonical('doscar_rewards.csv')
-
-        df_dos = None
-        if doscar_csv.exists():
-            try:
-                df_dos = pd.read_csv(doscar_csv)
-            except Exception:
-                df_dos = None
-
-        # build name->reward mapping from available columns
-        dos_dict = {}
-        if df_dos is not None:
-            if 'compound_name' in df_dos.columns and 'reward_normalized' in df_dos.columns:
-                dos_dict = dict(zip(df_dos['compound_name'], df_dos['reward_normalized']))
-            else:
-                dos_dict = dict(zip(df_dos.iloc[:, 0], df_dos.iloc[:, 1]))
+        # Compute r_DOS in real time from the raw peaks file (no precomputed cache)
+        from mcts_crystal.doscar_utils import DoscarRewardLookup
+        peaks_csv = find_canonical('doscar_peaks_data_with_U.csv')
+        dos_dict = DoscarRewardLookup(peaks_file=str(peaks_csv)).rewards_dict
 
         # Robust mapping: match by element set excluding the rare-earth/f-block element
         import re
@@ -476,7 +452,7 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
         except Exception:
             def ehull_reward(x):
                 import numpy as _np
-                return -_np.tanh(300.0 * (x - 0.05))
+                return -_np.tanh(120.0 * (x - 0.05))
         top15['ehull_reward'] = top15['e_above_hull'].apply(ehull_reward)
 
     # synthesized detection by element sets

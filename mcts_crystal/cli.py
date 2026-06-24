@@ -19,8 +19,8 @@ Examples:
     python run_mcts.py --iterations 100                   # 100 iterations
     python run_mcts.py --structure my_structure.cif        # Custom structure
     python run_mcts.py --rollout-method ehull --mp-api-key YOUR_KEY       # E_hull only (MACE + Materials Project, no DFT/DOSCAR data needed)
-    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_rewards.csv)
-    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_rewards.csv, no MACE/MP needed)
+    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_peaks_data_with_U.csv)
+    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_peaks_data_with_U.csv, no MACE/MP needed)
     python run_mcts.py --f-block-mode lanthanides_u_extended  # Lanthanides + U, extended moves
     python run_mcts.py --exploration-constant 0.2          # Higher exploration (default: 0.1)
     python run_mcts.py --no-labels                         # Turn off labels on radial tree visualization
@@ -142,8 +142,8 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
     parser.add_argument('--rollout-method', type=str, default='ehull',
                        choices=['ehull', 'ehull_rdos', 'rdos'],
                        help='Rollout method: ehull (tanh-transformed energy above hull only; MACE + Materials Project, no DFT/DOSCAR data needed), '
-                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_rewards.csv), '
-                            'or rdos (rDOS only, looked up from doscar_rewards.csv; no MACE/Materials Project needed). '
+                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_peaks_data_with_U.csv), '
+                            'or rdos (rDOS only, computed in real time from doscar_peaks_data_with_U.csv; no MACE/Materials Project needed). '
                             'Reward: ehull -> ehull_reward(e_above_hull); ehull_rdos -> beta*ehull_reward(e_above_hull) + gamma*r_DOS; rdos -> r_DOS')
     parser.add_argument('--beta', type=float, default=1.0,
                        help='Weight for the E_hull reward when using ehull_rdos (default: 1.0)')
@@ -203,14 +203,14 @@ def main():
         logger.info(f"   Then run with: --mp-api-key YOUR_KEY, or set \"mp_api_key\" in config.json")
         return 1
 
-    # Check if DOSCAR rewards file exists for methods that need rDOS
+    # Check if DOSCAR peaks file exists for methods that need rDOS (rewards are
+    # always computed in real time from raw peak data - no precomputed cache)
     if args.rollout_method in ['ehull_rdos', 'rdos']:
-        doscar_file = Path("doscar_rewards.csv")
         peaks_file = Path("doscar_peaks_data_with_U.csv")
-        if not doscar_file.exists() and not peaks_file.exists():
-            logger.error(f"DOSCAR rewards file (doscar_rewards.csv) not found and no peaks file available for rollout method {args.rollout_method}")
-            logger.info(f"   Provide either doscar_rewards.csv (precomputed) or doscar_peaks_data_with_U.csv (raw peaks) in the repo root")
-            logger.info(f"   See the README's Data Availability section for the expected schema and how to generate these files.")
+        if not peaks_file.exists():
+            logger.error(f"DOSCAR peaks file (doscar_peaks_data_with_U.csv) not found for rollout method {args.rollout_method}")
+            logger.info(f"   Provide doscar_peaks_data_with_U.csv (raw peaks) in the repo root")
+            logger.info(f"   See the README's Data Availability section for the expected schema.")
             return 1
 
     logger.info("=" * 80)
@@ -320,7 +320,7 @@ def main():
     logger.info(f"   Number of rollouts: {args.n_rollout}")
     logger.info(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
-        logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(300*(E_hull-0.05))): {args.beta}")
+        logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(120*(E_hull-0.05))): {args.beta}")
         logger.info(f"   Gamma (rDOS weight): {args.gamma}")
     logger.info(f"   This may take several minutes depending on cache hit rate...")
 

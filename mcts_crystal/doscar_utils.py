@@ -17,69 +17,58 @@ class DoscarRewardLookup:
     Handles loading and looking up DOSCAR rewards for compounds.
     """
 
-    def __init__(self, csv_file: Optional[str] = None):
+    def __init__(self, peaks_file: Optional[str] = None):
         """
         Initialize DOSCAR reward lookup.
 
+        Rewards are always computed in real time from raw DOSCAR peak data -
+        there is no precomputed/cached rewards file.
+
         Args:
-            csv_file: Path to doscar_rewards.csv file
+            peaks_file: Path to the raw DOSCAR peaks CSV (defaults to
+                doscar_peaks_data_with_U.csv at the repo root)
         """
         self.rewards_dict = {}
 
-        # Determine default CSV and peaks file locations
-        repo_root = Path(__file__).parent.parent
-        default_csv = repo_root / "doscar_rewards.csv"
-        peaks_file = repo_root / "doscar_peaks_data_with_U.csv"
-
-        # Allow user-specified csv_file path; otherwise prefer default CSV
-        if csv_file is None:
-            csv_path = default_csv
+        if peaks_file is None:
+            repo_root = Path(__file__).parent.parent
+            peaks_path = repo_root / "doscar_peaks_data_with_U.csv"
         else:
-            csv_path = Path(csv_file)
+            peaks_path = Path(peaks_file)
 
-        if csv_path.exists():
-            df = pd.read_csv(csv_path)
-            # Create dictionary mapping compound_name -> reward_normalized
-            if 'compound_name' in df.columns and 'reward_normalized' in df.columns:
-                self.rewards_dict = dict(zip(df['compound_name'], df['reward_normalized']))
-                logger.info(f"   Loaded {len(self.rewards_dict)} DOSCAR rewards from {csv_path.name}")
-            else:
-                logger.warning(f"   CSV file {csv_path} missing expected columns; ignoring")
+        if not peaks_path.exists():
+            logger.warning(f"   DOSCAR peaks file not found: {peaks_path}")
+            logger.warning(f"   DOSCAR rewards will be set to 0.0")
+            return
 
-        elif peaks_file.exists():
-            # Compute rewards from raw peaks data on-the-fly (fall back when precomputed CSV absent)
-            try:
-                logger.info(f"   Precomputed DOSCAR CSV not found; computing rewards from peaks: {peaks_file.name}")
-                peaks_df = pd.read_csv(peaks_file)
-                # Prefer core compounds (no '_valence' suffix); include valence-only compounds if core missing
-                core_compounds = peaks_df[~peaks_df['COMPOUND_NAME'].str.endswith('_valence')]
-                valence_compounds = peaks_df[peaks_df['COMPOUND_NAME'].str.endswith('_valence')]
-                valence_base_names = valence_compounds['COMPOUND_NAME'].str.replace('_valence', '').unique()
-                core_names = core_compounds['COMPOUND_NAME'].unique()
-                missing_core_bases = set(valence_base_names) - set(core_names)
-                valence_to_include = valence_compounds[
-                    valence_compounds['COMPOUND_NAME'].str.replace('_valence', '').isin(missing_core_bases)
-                ]
-                filtered_df = pd.concat([core_compounds, valence_to_include])
+        try:
+            peaks_df = pd.read_csv(peaks_path)
+            # Prefer core compounds (no '_valence' suffix); include valence-only compounds if core missing
+            core_compounds = peaks_df[~peaks_df['COMPOUND_NAME'].str.endswith('_valence')]
+            valence_compounds = peaks_df[peaks_df['COMPOUND_NAME'].str.endswith('_valence')]
+            valence_base_names = valence_compounds['COMPOUND_NAME'].str.replace('_valence', '').unique()
+            core_names = core_compounds['COMPOUND_NAME'].unique()
+            missing_core_bases = set(valence_base_names) - set(core_names)
+            valence_to_include = valence_compounds[
+                valence_compounds['COMPOUND_NAME'].str.replace('_valence', '').isin(missing_core_bases)
+            ]
+            filtered_df = pd.concat([core_compounds, valence_to_include])
 
-                # Compute reward for each compound. Left unscaled here; any
-                # normalization is applied downstream via gamma/gamma_prefactor.
-                sigma = 0.5
-                exp_factor = np.exp(-0.5 * (1.0 / sigma) ** 2)
-                results = {}
-                for cname, group in filtered_df.groupby('COMPOUND_NAME'):
-                    # sum (PEAK_HEIGHT / PEAK_WIDTH) * exp_factor
-                    contrib = (group['PEAK_HEIGHT'] / group['PEAK_WIDTH']) * exp_factor
-                    results[cname] = float(contrib.sum())
+            # Compute reward for each compound. Left unscaled here; gamma
+            # (the single composite-score/plot weight) is applied downstream.
+            # Gaussian weight centered at the Fermi level (PEAK_ENERGY=0): peaks
+            # far from E_Fermi contribute less than peaks near it.
+            sigma = 0.5
+            results = {}
+            for cname, group in filtered_df.groupby('COMPOUND_NAME'):
+                exp_factor = np.exp(-0.5 * (group['PEAK_ENERGY'] / sigma) ** 2)
+                contrib = (group['PEAK_HEIGHT'] / group['PEAK_WIDTH']) * exp_factor
+                results[cname] = float(contrib.sum())
 
-                self.rewards_dict = results
-                logger.info(f"   Computed {len(self.rewards_dict)} DOSCAR rewards from peaks data")
-            except Exception as e:
-                logger.error(f"   Error computing DOSCAR rewards from peaks: {e}")
-                logger.warning(f"   DOSCAR rewards will be set to 0.0")
-        else:
-            logger.warning(f"   DOSCAR rewards file not found: {csv_path}")
-            logger.warning(f"   DOSCAR peaks file not found: {peaks_file}")
+            self.rewards_dict = results
+            logger.info(f"   Computed {len(self.rewards_dict)} DOSCAR rewards from peaks data")
+        except Exception as e:
+            logger.error(f"   Error computing DOSCAR rewards from peaks: {e}")
             logger.warning(f"   DOSCAR rewards will be set to 0.0")
 
     def convert_formula_to_doscar_format(self, formula: str) -> Optional[str]:

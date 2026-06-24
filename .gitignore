@@ -15,7 +15,6 @@ __pycache__/
 .DS_Store
 
 # Embargoed/large data - document in README, do not commit until public release
-doscar_rewards.csv
 doscar_peaks_data_with_U.csv
 high_throughput_mace_results.full.csv
 *.tar.gz

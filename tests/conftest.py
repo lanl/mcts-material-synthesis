@@ -16,12 +16,19 @@ def u_w_pb_atoms():
 
 
 @pytest.fixture
-def doscar_rewards_csv(tmp_path):
-    """A small synthetic doscar_rewards.csv for DoscarRewardLookup tests."""
-    csv_path = tmp_path / "doscar_rewards.csv"
+def doscar_peaks_csv(tmp_path):
+    """A small synthetic doscar_peaks_data_with_U.csv for DoscarRewardLookup tests.
+
+    Rewards are always computed in real time from raw peaks - there is no
+    precomputed rewards cache - so this fixture supplies peak rows instead of
+    a rewards table. One peak each for "U-Pb-W" and "Ce-Si-Ti".
+    """
+    csv_path = tmp_path / "doscar_peaks_data_with_U.csv"
     df = pd.DataFrame({
-        "compound_name": ["U-Pb-W", "Ce-Si-Ti"],
-        "reward_normalized": [0.42, 1.23],
+        "COMPOUND_NAME": ["U-Pb-W", "Ce-Si-Ti"],
+        "PEAK_ENERGY": [0.0, 0.0],
+        "PEAK_WIDTH": [1.0, 1.0],
+        "PEAK_HEIGHT": [0.42, 1.23],
     })
     df.to_csv(csv_path, index=False)
     return csv_path

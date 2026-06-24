@@ -176,7 +176,7 @@ class MCTS:
         if n_extra <= 0:
             return rewards
 
-        scale = 1 - 0.1 * rollout_depth
+        scale = 0.9 ** rollout_depth
 
         if n_workers <= 1:
             for _ in range(n_extra):
@@ -264,10 +264,10 @@ class MCTS:
             # E_hull only (tanh-transformed), no DFT/DOSCAR data required
             mode = 'ehull'
         elif rollout_method == 'ehull_rdos':
-            # E_hull (tanh-transformed) + rDOS, requires doscar_rewards.csv
+            # E_hull (tanh-transformed) + rDOS, requires doscar_peaks_data_with_U.csv
             mode = f'ehull_rdos_{beta}_{gamma}'
         elif rollout_method == 'rdos':
-            # rDOS only, requires doscar_rewards.csv, no MACE/Materials Project needed
+            # rDOS only, requires doscar_peaks_data_with_U.csv, no MACE/Materials Project needed
             mode = 'rdos'
         else:
             raise ValueError(f"Unknown rollout_method: {rollout_method}")
