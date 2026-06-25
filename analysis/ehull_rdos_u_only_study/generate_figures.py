@@ -5,6 +5,7 @@ Generate publication figures as PNGs directly from MCTS outputs and high-through
 This script replaces the prior gnuplot/prepare pipeline and writes PNG files:
 - ehull_vs_rdos.png
 - composite_convergence.png
+- convergence_by_starting_material.png (reuses sensitivity_studies' starting_material_sweep data)
 - radial_tree_composite.png (delegates to create_composite_radial_tree.py)
 
 It expects to be run from `analysis/ehull_rdos_u_only_study/` where the MCTS
@@ -119,7 +120,16 @@ def compute_composite(df, beta=1.0, gamma=None):
 def load_master_mace(repo_root: Path):
     """Load canonical high-throughput MACE CSV and DOS rewards (computed in real
     time from raw peak data - there is no precomputed rewards cache).
-    Returns (df_mace, dos_by_key) where dos_by_key maps element-set keys to reward.
+    Returns (df_mace, dos_by_key) where dos_by_key maps element-set keys (the
+    TM/group-IV pair, f-block element stripped) to a DOS reward.
+
+    doscar_peaks_data_with_U.csv has a separate row - and a genuinely
+    different reward - per f-block element (e.g. 'U-Ge-Fe' vs 'Er-Ge-Fe' are
+    different compounds with different DOS peaks), so for each (TM, group-IV)
+    pair we prefer the exact uranium-row reward where one exists. We only
+    fall back to the max across other f-block substitutions (a same-framework
+    proxy) when uranium's own row is missing - never as a default, since that
+    would substitute a different compound's reward for uranium's.
     """
     # Prefer the file in this repo; only search parent/sibling folders as a fallback
     # (this repo may sit next to other mcts_materials checkouts with stale copies).
@@ -163,7 +173,12 @@ def load_master_mace(repo_root: Path):
             return parts
         return re.findall(r'[A-Z][a-z]?', str(s))
 
-    # collapse compound_name -> reward into element-set keys (ignore f-block differences)
+    # collapse compound_name -> reward into element-set keys (TM/group-IV pair,
+    # f-block element stripped). dos_by_key_fallback is the max across whatever
+    # f-block substitutions exist for that pair; dos_by_key_uranium is the
+    # exact 'U-...' row only. Uranium's own data wins wherever it exists.
+    dos_by_key_fallback = {}
+    dos_by_key_uranium = {}
     for name, val in dos_dict.items():
         try:
             v = float(val)
@@ -173,98 +188,64 @@ def load_master_mace(repo_root: Path):
         key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
         if not key:
             continue
-        dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), float(v))
+        dos_by_key_fallback[key] = max(dos_by_key_fallback.get(key, float('-inf')), v)
+        if 'U' in elems:
+            dos_by_key_uranium[key] = v
+
+    dos_by_key = dos_by_key_fallback
+    dos_by_key.update(dos_by_key_uranium)
 
     return df_mace, dos_by_key
 
 
 def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
-    # Prefer the canonical files in *this* repo over same-named files that may exist in
-    # sibling/parent checkouts (e.g. a neighboring mcts_materials clone with stale data).
-    this_repo_root = Path(__file__).resolve().parents[2]
-
-    def find_canonical(filename):
-        local = this_repo_root / filename
-        if local.exists():
-            return local
-        candidates = list(repo_root.rglob(filename))
-        return candidates[0] if candidates else local
-
-    # Prefer using a canonical high-throughput CSV of the full design-space (if available).
-    # This ensures the "All Compounds" backdrop contains the full U-containing set (~108).
-    mace_csv = find_canonical('high_throughput_mace_results.full.csv')
-
     comp_csv = out_dir / 'all_compounds_by_composite_score.csv'
     df_u = None
     # x-axis for this plot is gamma * r_DOS (the actual composite-score component),
     # applied consistently to the backdrop and every overlay below.
     gamma = load_gamma()
 
-    if mace_csv.exists():
-        try:
-            df_mace = pd.read_csv(mace_csv)
-        except Exception:
-            df_mace = None
+    # Delegates to load_master_mace() for both the high-throughput CSV and the
+    # DOS-reward lookup, so this backdrop always uses the same (uranium-row-
+    # preferring, not cross-lanthanide-max) r_DOS as compute_composite() and
+    # the top15 table - see load_master_mace()'s docstring for why that matters.
+    df_mace, dos_by_key = load_master_mace(repo_root)
 
-        # Compute r_DOS in real time from the raw peaks file (no precomputed cache)
-        from mcts_crystal.doscar_utils import DoscarRewardLookup
-        peaks_csv = find_canonical('doscar_peaks_data_with_U.csv')
-        dos_dict = DoscarRewardLookup(peaks_file=str(peaks_csv)).rewards_dict
-
-        # Robust mapping: match by element set excluding the rare-earth/f-block element
-        import re
+    def _make_key_from_formula(formula):
+        if pd.isna(formula):
+            return ()
+        s = str(formula)
+        if '-' in s:
+            parts = [p for p in re.split('[^A-Za-z]', s) if p]
+        else:
+            parts = re.findall(r'[A-Z][a-z]?', s)
         F_BLOCK = {'Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Th','Pa','U','Np','Pu','Ac'}
+        return tuple(sorted([e for e in parts if e not in F_BLOCK]))
 
-        def parse_elems(s):
-            if pd.isna(s):
-                return []
-            if '-' in str(s):
-                parts = [p for p in re.split('[^A-Za-z]', str(s)) if p]
-                return parts
-            return re.findall(r'[A-Z][a-z]?', str(s))
+    if df_mace is not None:
+        # attach r_dos by element-set key (TM/group-IV pair, f-block element stripped)
+        df_mace['name'] = df_mace.get('name', df_mace.get('formula'))
+        df_mace['r_dos'] = 0.0
+        for idx, row in df_mace.iterrows():
+            key = _make_key_from_formula(row['name'])
+            if key in dos_by_key:
+                df_mace.at[idx, 'r_dos'] = dos_by_key[key]
+        if 'name' not in df_mace.columns and 'formula' in df_mace.columns:
+            df_mace['name'] = df_mace['formula']
 
-        dos_by_key = {}
-        for name, val in dos_dict.items():
-            elems = parse_elems(name)
-            # remove f-block (e.g., Ce) to create a canonical key
-            key_elems = tuple(sorted([e for e in elems if e not in F_BLOCK]))
-            if not key_elems:
-                continue
-            # if duplicates, keep max reward
-            dos_by_key[key_elems] = max(dos_by_key.get(key_elems, float('-inf')), float(val))
+        # Filter to U-containing compounds (exclude Ce)
+        def elem_set(name):
+            if pd.isna(name):
+                return set()
+            s = str(name)
+            if '-' in s:
+                parts = [p for p in re.split('[^A-Za-z]', s) if p]
+                return set([p.capitalize() for p in parts])
+            parts = re.findall(r'[A-Z][a-z]?', s)
+            return set(parts)
 
-        def _make_key_from_formula(formula):
-            elems = parse_elems(formula)
-            key = tuple(sorted([e for e in elems if e not in F_BLOCK]))
-            return key
-
-        if df_mace is not None:
-            # attach r_dos by element-set key (ignoring f-block element differences)
-            df_mace['name'] = df_mace.get('name', df_mace.get('formula'))
-            df_mace['r_dos'] = 0.0
-            for idx, row in df_mace.iterrows():
-                key = _make_key_from_formula(row['name'])
-                if key in dos_by_key:
-                    df_mace.at[idx, 'r_dos'] = dos_by_key[key]
-            # preserve previous behavior: ensure column exists
-            if 'r_dos' not in df_mace.columns:
-                df_mace['r_dos'] = 0.0
-            if 'name' not in df_mace.columns and 'formula' in df_mace.columns:
-                df_mace['name'] = df_mace['formula']
-
-            # Filter to U-containing compounds (exclude Ce)
-            def elem_set(name):
-                if pd.isna(name):
-                    return set()
-                s = str(name)
-                if '-' in s:
-                    parts = [p for p in re.split('[^A-Za-z]', s) if p]
-                    return set([p.capitalize() for p in parts])
-                parts = re.findall(r'[A-Z][a-z]?', s)
-                return set(parts)
-
-            df_mace['elem_set'] = df_mace['name'].apply(elem_set)
-            df_u = df_mace[df_mace['elem_set'].apply(lambda s: 'U' in s and 'Ce' not in s)].copy()
+        df_mace['elem_set'] = df_mace['name'].apply(elem_set)
+        df_u = df_mace[df_mace['elem_set'].apply(lambda s: 'U' in s and 'Ce' not in s)].copy()
 
     # If we still don't have a mace-derived U list, fall back to the analysis CSV (MCTS outputs)
     if df_u is None and comp_csv.exists():
@@ -325,7 +306,6 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
 
     # synthesized names (successful) - see synthesized_compounds.py
     synthesized_names = SYNTHESIZED_COMPOUNDS
-    import re
     def elem_set(name):
         if pd.isna(name):
             return set()
@@ -541,6 +521,46 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
     print('Wrote LaTeX table:', tex_path)
 
 
+def _set_plateau_xlim(ax, curves, buffer_frac=0.25, tol_frac=0.01, ignore_first=1):
+    """Truncate the x-axis around the transient of one or more same-length
+    curves: find the last index at which *any* curve still differs from its
+    own final value by more than tol_frac of its settled range, then size the
+    axis so that point sits at (1 - buffer_frac) of the width, leaving the
+    rest as flat-plateau context.
+
+    A relative tol_frac (rather than exact equality) matters once curves are
+    averaged across seeds: a single seed nudging the mean by a negligible,
+    sub-percent amount very late in the run would otherwise count as "still
+    changing" and drag the whole x-axis back out to the full run length.
+
+    ignore_first excludes a leading pre-search sentinel (e.g. best_reward =
+    -10.0 at iteration 0) from both the range and "still changing" checks, so
+    it doesn't swamp the real post-search dynamic range.
+
+    Using the slowest-to-settle curve (max plateau-start across `curves`)
+    keeps every curve's full transient visible when comparing several at once.
+    """
+    plateau_starts = []
+    n_iter = None
+    for arr in curves:
+        arr = np.asarray(arr, dtype=float)
+        if arr.size <= ignore_first:
+            continue
+        n_iter = len(arr) if n_iter is None else max(n_iter, len(arr))
+        body = arr[ignore_first:]
+        final_val = body[-1]
+        rng = np.nanmax(body) - np.nanmin(body)
+        tol = tol_frac * rng if rng > 0 else 1e-9 * max(1.0, abs(final_val))
+        changed = np.where(np.abs(body - final_val) > tol)[0]
+        plateau_starts.append((changed[-1] + 1 + ignore_first) if changed.size > 0 else ignore_first)
+    if not plateau_starts or n_iter is None:
+        return
+    plateau_start = min(max(plateau_starts), n_iter - 1)
+    if plateau_start > 0:
+        xmax = min(plateau_start / (1.0 - buffer_frac), n_iter - 1)
+        ax.set_xlim(0, xmax)
+
+
 def plot_composite_convergence(out_dir: Path):
     # Load convergence history and composite CSV
     conv_csv = out_dir / 'convergence_history.csv'
@@ -635,19 +655,7 @@ def plot_composite_convergence(out_dir: Path):
     ax.plot(range(start, len(best_weighted_rdos_history)), best_weighted_rdos_history[start:],
             lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
 
-    # Truncate the x-axis around the transient: find where the (monotonic)
-    # best-composite curve last changes, then size the axis so that point
-    # sits at 75% of the width, leaving the final 25% as plateau context.
-    comp_arr = np.asarray(best_composite_history, dtype=float)
-    n_iter = len(comp_arr)
-    final_val = comp_arr[-1]
-    tol = 1e-9 * max(1.0, abs(final_val))
-    changed = np.where(np.abs(comp_arr - final_val) > tol)[0]
-    plateau_start = (changed[-1] + 1) if changed.size > 0 else 0
-    plateau_start = min(plateau_start, n_iter - 1)
-    if plateau_start > 0:
-        xmax = min(plateau_start / 0.75, n_iter - 1)
-        ax.set_xlim(0, xmax)
+    _set_plateau_xlim(ax, [best_composite_history])
 
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Score')
@@ -657,6 +665,56 @@ def plot_composite_convergence(out_dir: Path):
     out = out_dir / 'composite_convergence.png'
     fig.savefig(out, dpi=600)
     plt.close(fig)
+
+
+def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Path):
+    """Compare convergence dynamics across different starting materials.
+
+    Reuses sensitivity_studies/results/starting_material_sweep/convergence_data.csv
+    instead of re-running MCTS: that sweep already uses this study's exact
+    composite reward (rollout_method='ehull_rdos', beta=1.0, gamma=0.0001 -
+    see sensitivity_studies/scripts/common.py BASELINE), varying only
+    transition_metal/group_iv, with 5 seeds per starting material. Each line
+    below is the mean best-composite-so-far across those 5 seeds, with a
+    shaded band showing seed-to-seed spread.
+    """
+    sweep_csv = (mcts_materials_root / 'sensitivity_studies' / 'results'
+                 / 'starting_material_sweep' / 'convergence_data.csv')
+    if not sweep_csv.exists():
+        print('Skipping convergence_by_starting_material: missing', sweep_csv)
+        return
+
+    df = pd.read_csv(sweep_csv)
+    value_order = list(df['value'].unique())  # preserve the sweep's own (graph-distance) ordering
+    stats = df.groupby(['value', 'iteration'])['best_reward'].agg(['mean', 'std']).reset_index()
+
+    fig, ax = plt.subplots(figsize=(4, 3.2))
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
+    curves_for_xlim = []
+    for color, value in zip(colors, value_order):
+        g = stats[stats['value'] == value].sort_values('iteration').reset_index(drop=True)
+        # Keep iteration 0 in the array used for x-axis truncation below, so
+        # its index stays aligned with real iteration numbers; the sentinel
+        # best_reward=-10.0 at iteration 0 is excluded only from the drawn
+        # line/band so it doesn't dominate the y-axis (same as composite_convergence).
+        curves_for_xlim.append(g['mean'].to_numpy())
+
+        g_plot = g[g['iteration'] >= 1]
+        label = format_name_u_tm_giv(value.split(' (')[0])
+        ax.plot(g_plot['iteration'], g_plot['mean'], lw=1.8, color=color, label=label)
+        std = g_plot['std'].fillna(0.0)
+        ax.fill_between(g_plot['iteration'], g_plot['mean'] - std, g_plot['mean'] + std,
+                         color=color, alpha=0.2, linewidth=0)
+
+    _set_plateau_xlim(ax, curves_for_xlim)
+    ax.set_xlabel('Iteration')
+    ax.set_ylabel('Best Composite Score')
+    ax.legend(fontsize=7, title='Starting material', title_fontsize=7)
+    plt.tight_layout()
+    out = out_dir / 'convergence_by_starting_material.png'
+    fig.savefig(out, dpi=600)
+    plt.close(fig)
+    print(f'Saved: {out}')
 
 
 def main():
@@ -688,6 +746,7 @@ def main():
     # Generate figures
     plot_ehull_vs_rdos(repo_root, out_dir)
     plot_composite_convergence(out_dir)
+    plot_convergence_by_starting_material(script_dir.parents[1], out_dir)
 
     # Generate radial tree via existing script (it writes PNG)
     subprocess.run([sys.executable, str(out_dir / 'create_composite_radial_tree.py')], check=False)
