@@ -16,9 +16,8 @@ python plot_sweep.py "${RESULTS}/c_sweep/convergence_data.csv" \
 
 echo ""
 echo "=== starting material sweep ==="
-python sweep_starting_material.py
-python plot_sweep.py "${RESULTS}/starting_material_sweep/convergence_data.csv" \
-    "Starting material" "${RESULTS}/starting_material_sweep/convergence_vs_starting_material.png"
+echo "(moved to analysis/ehull_rdos_u_only_study/sweep_starting_material.py - run that"
+echo " directly, then analysis/ehull_rdos_u_only_study/generate_figures.py to replot)"
 
 echo ""
 echo "=== selection_mode sweep ==="

@@ -24,4 +24,9 @@ mcts_results/
 *.pkl
 # Local experimental compounds list (do not commit)
 analysis/ehull_rdos_u_only_study/compounds_filtered.dat
-analysis/ehull_rdos_u_only_study/*.csv
+analysis/ehull_rdos_u_only_study/**/*.csv
+# Supplementary-run outputs and sidecar files (regenerate via run_mcts.py + generate_figures.py)
+analysis/ehull_rdos_u_only_study/d5_start_run/
+analysis/ehull_rdos_u_only_study/farthest_start_run/
+# Sensitivity-sweep outputs (regenerate via sensitivity_studies/scripts/run_all.sh)
+sensitivity_studies/results/

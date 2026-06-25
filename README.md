@@ -295,7 +295,8 @@ mcts_materials/
 `analysis/ehull_rdos_u_only_study/` contains the scripts used to run and analyze the U-only `ehull_rdos` study (U-only f-block mode; `--rollout-method ehull_rdos`, plus `iterations`/`selection_mode`/`exploration_constant`/`beta`/`gamma`/`transition_metal`/`group_iv` all read from `config.json` rather than hardcoded in the script - see `config.json`/`config.example.json` for current values):
 
 - `run_study.sh`: runs `run_mcts.py` with the published settings, then calls `generate_plots.sh`
-- `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, convergence plot, composite-colored radial tree) via `generate_figures.py`, plus `generate_top10_report.py` for the ranked compound list
+- `generate_plots.sh`: regenerates all figures (E_hull-vs-rDOS scatter, convergence-by-starting-material plot, composite-colored radial tree) and the top-15 LaTeX table via `generate_figures.py`
+- `sweep_starting_material.py`: replicate-run sweep (5 seeds each) across starting materials at increasing move-graph distance from the global-best compound, feeding `convergence_by_starting_material.png`
 
 This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
 
