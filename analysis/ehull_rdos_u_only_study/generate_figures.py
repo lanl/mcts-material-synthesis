@@ -756,7 +756,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
     _set_plateau_xlim(ax, curves_for_xlim)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Best Composite Score')
-    ax.legend(fontsize=7, title='Starting material (edit dist. to best)', title_fontsize=7)
+    ax.legend(fontsize=7, title='Starting material (edit dist. to best)', title_fontsize=7, loc='lower left')
     plt.tight_layout()
     out = out_dir / 'convergence_by_starting_material.png'
     fig.savefig(out, dpi=600)
