@@ -511,7 +511,6 @@ def plot_composite_convergence(out_dir: Path):
     composite_lookup = dict(zip(df_comp['name'], df_comp['composite_score']))
 
     formulas_seen = set()
-    best_composite_history = []
     best_ehull_reward_history = []
     # Track raw best rDOS history (plot raw r_DOS, not gamma-weighted)
     best_weighted_rdos_history = []
@@ -519,12 +518,23 @@ def plot_composite_convergence(out_dir: Path):
 
     gamma = load_gamma()
 
+    # best_reward is MCTS's own exact running-max composite score (tracked
+    # directly in MCTS.max_reward_history) - no need to reconstruct an
+    # approximation of it from the best_e_form/best_e_hull/best_rdos formula
+    # columns below, which can miss compounds that were visited but never
+    # individually flagged as the best e_form/e_hull/rDOS.
+    best_composite_history = df_conv['best_reward'].tolist() if 'best_reward' in df_conv.columns else []
+
     for _, row in df_conv.iterrows():
         for col in ['best_e_form_formula', 'best_e_hull_formula', 'best_rdos_formula']:
             if col in df_conv.columns and pd.notna(row[col]):
                 formulas_seen.add(row[col])
 
-        # Determine current best composite and corresponding components
+        # Determine the component breakdown (ehull_reward, r_DOS) of whichever
+        # of the formulas above currently has the highest composite score -
+        # still an approximation, since the column above doesn't carry its
+        # own component breakdown, but it's the best proxy available without
+        # re-deriving the actual winning node's components from the pickle.
         best_comp = float('-inf')
         best_ehull = np.nan
         best_rdos = np.nan
@@ -553,25 +563,34 @@ def plot_composite_convergence(out_dir: Path):
             except Exception:
                 pass
 
-        if best_comp == float('-inf'):
-            best_comp = 0.0
         if current_max_rdos == float('-inf'):
             current_max_rdos = 0.0
 
-        best_composite_history.append(best_comp)
         best_ehull_reward_history.append(0.0 if np.isnan(best_ehull) else best_ehull)
         # store gamma * r_DOS for the best-composite compound (the actual composite-score component)
         best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (best_rdos * gamma))
         # store monotonic max rDOS seen so far (unweighted)
         best_rdos_max_history.append(current_max_rdos)
 
+    if not best_composite_history:
+        # Fallback for older convergence_history.csv files without best_reward
+        best_composite_history = [0.0] * len(df_conv)
+
+    # Iteration 0 is a pre-search sentinel (best_reward = -10.0, not a real
+    # composite score), which would otherwise dominate the y-axis and
+    # compress the rest of the curve into an unreadable sliver.
+    start = 1 if len(best_composite_history) > 1 else 0
+
     # Plot with tighter publication-friendly size and higher DPI
     fig, ax = plt.subplots(figsize=(3, 3))
-    ax.plot(best_composite_history, lw=2, color='#1f77b4', label='Best Composite')
+    ax.plot(range(start, len(best_composite_history)), best_composite_history[start:],
+            lw=2, color='#1f77b4', label='Best Composite')
     # Best ehull_reward labeled as r_{E_{Hull}} with E italic and Hull roman
-    ax.plot(best_ehull_reward_history, lw=1.5, color='#ff7f0e', label=r"Best $r_{E_{\mathrm{Hull}}}$")
+    ax.plot(range(start, len(best_ehull_reward_history)), best_ehull_reward_history[start:],
+            lw=1.5, color='#ff7f0e', label=r"Best $r_{E_{\mathrm{Hull}}}$")
     # Best gamma * r_DOS (component of composite), explicitly labeled with the gamma factor
-    ax.plot(best_weighted_rdos_history, lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
+    ax.plot(range(start, len(best_weighted_rdos_history)), best_weighted_rdos_history[start:],
+            lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
 
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Score')
