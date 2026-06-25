@@ -9,6 +9,8 @@ Blue-red color scheme: blue = higher composite (better), red = lower composite (
 
 import pickle
 import math
+import json
+import argparse
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -193,8 +195,17 @@ def build_tree_data(mcts):
 def main():
     script_dir = Path(__file__).parent
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--run-dir', type=str, default=None,
+                         help='Directory containing mcts_object.pkl to visualize '
+                              '(default: this script\'s own directory, i.e. the '
+                              'study\'s main run). Figures still always get saved '
+                              'into this script\'s figures/ directory.')
+    args = parser.parse_args()
+    run_dir = Path(args.run_dir) if args.run_dir else script_dir
+
     # Load MCTS pickle
-    pkl_path = script_dir / 'mcts_object.pkl'
+    pkl_path = run_dir / 'mcts_object.pkl'
     if not pkl_path.exists():
         print(f"Error: {pkl_path} not found")
         return 1
@@ -202,6 +213,18 @@ def main():
     print("Loading MCTS pickle...")
     with open(pkl_path, 'rb') as f:
         mcts = pickle.load(f)
+
+    # Optional starting-material annotation, written by generate_figures.py's
+    # describe_mcts_run_starting_material() (avoids needing to import that
+    # module here, which would create a circular import the other way).
+    start_info = {}
+    start_info_path = run_dir / 'starting_material_info.json'
+    if start_info_path.exists():
+        try:
+            with open(start_info_path) as f:
+                start_info = json.load(f)
+        except Exception:
+            start_info = {}
 
     # Build tree data with composite scores
     print("Building tree data...")
@@ -407,9 +430,11 @@ def main():
         except Exception:
             pass
 
-    fig.text(0.5, -0.03,
-             '★ starting node (MCTS root)    bold arrow = expansion step    faint line = revisit of an existing composition',
-             ha='center', va='top', fontsize=7)
+    caption = '★ starting node (MCTS root)    bold arrow = expansion step    faint line = revisit of an existing composition'
+    if start_info.get('label'):
+        dist_str = f", d={start_info['distance']} to global best" if start_info.get('distance') is not None else ''
+        caption += f"\nStarting material: {start_info['label']}{dist_str}"
+    fig.text(0.5, -0.03, caption, ha='center', va='top', fontsize=7)
 
     # Ensure figures directory exists and save into it
     figures_dir = script_dir / 'figures'

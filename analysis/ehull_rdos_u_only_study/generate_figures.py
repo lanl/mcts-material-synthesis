@@ -4,7 +4,6 @@ Generate publication figures as PNGs directly from MCTS outputs and high-through
 
 This script replaces the prior gnuplot/prepare pipeline and writes PNG files:
 - ehull_vs_rdos.png
-- composite_convergence.png
 - convergence_by_starting_material.png (reuses sensitivity_studies' starting_material_sweep data)
 - radial_tree_composite.png (delegates to create_composite_radial_tree.py)
 
@@ -18,6 +17,7 @@ computed in real time from the raw peaks file - no precomputed rewards cache).
 """
 
 from pathlib import Path
+from collections import deque
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -28,6 +28,8 @@ import sys
 import shutil
 import re
 import json
+import pickle
+from ase.data import atomic_numbers
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from synthesized_compounds import SYNTHESIZED_COMPOUNDS
@@ -198,7 +200,47 @@ def load_master_mace(repo_root: Path):
     return df_mace, dos_by_key
 
 
-def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
+def describe_mcts_run_starting_material(run_dir: Path, mcts_materials_root: Path):
+    """Return (formatted_label, edit_distance) describing the starting
+    material of the MCTS run pickled in run_dir/mcts_object.pkl: its
+    U-Tm-GroupIV-formatted formula, and its move-graph edit distance to the
+    true global-best U-only compound (per compute_global_u_only_ranks).
+    Returns (None, None) if the pickle or the global-best lookup is unavailable.
+    """
+    pkl_path = run_dir / 'mcts_object.pkl'
+    if not pkl_path.exists():
+        return None, None
+    with open(pkl_path, 'rb') as f:
+        mcts = pickle.load(f)
+    root_formula = mcts.root.get_chemical_formula()
+
+    global_ranks = compute_global_u_only_ranks(mcts_materials_root)
+    best_key = next((k for k, r in global_ranks.items() if r == 1), None)
+    if best_key is None:
+        return format_name_u_tm_giv(root_formula), None
+    target_tm = next((e for e in best_key if e in TRANSITION_METALS), None)
+    target_giv = next((e for e in best_key if e in GROUP_IV), None)
+    tm, giv = _parse_tm_giv(root_formula)
+    if not (target_tm and target_giv and tm and giv):
+        return format_name_u_tm_giv(root_formula), None
+
+    distance = _edit_distance_to_target(tm, giv, target_tm, target_giv)
+    return format_name_u_tm_giv(root_formula), distance
+
+
+def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None,
+                        start_label: str = None, start_dist: int = None):
+    """mcts_run_dir: directory whose all_compounds_by_composite_score.csv and
+    mcts_object.pkl drive the 'Top 10 (MCTS)' overlay and its starting-material
+    annotation. Defaults to out_dir (this study's main run). The 'All
+    Compounds' backdrop and synthesized-compound overlays are always the full
+    exhaustive design space, independent of mcts_run_dir.
+
+    start_label/start_dist: pre-computed describe_mcts_run_starting_material()
+    result for mcts_run_dir; computed internally if not passed (passing it in
+    lets main() share one computation with the radial-tree figure)."""
+    if mcts_run_dir is None:
+        mcts_run_dir = out_dir
     comp_csv = out_dir / 'all_compounds_by_composite_score.csv'
     df_u = None
     # x-axis for this plot is gamma * r_DOS (the actual composite-score component),
@@ -343,8 +385,11 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
     if exp_succ_x:
         ax.scatter(exp_succ_x, exp_succ_y, s=100, marker='s', facecolors='#9467bd', edgecolors='#9467bd', linewidths=0.8, label='Successful Synthesis')
 
-    # Top10 overlay if available (look in out_dir) - teal filled triangles for MCTS predictions
-    composite_csv = out_dir / 'all_compounds_by_composite_score.csv'
+    # Top10 overlay if available (from mcts_run_dir) - light-blue triangles for
+    # MCTS predictions. Smaller + semi-transparent so the several entries that
+    # sit very close together (e.g. similar r_DOS/e_hull) visibly darken where
+    # they overlap, instead of looking like fewer than 10 markers.
+    composite_csv = mcts_run_dir / 'all_compounds_by_composite_score.csv'
     if composite_csv.exists():
         df_comp = pd.read_csv(composite_csv)
         top10 = df_comp.head(10)
@@ -357,11 +402,15 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
                 xs.append(float(rdos) * gamma)
                 ys.append(e_hull)
         if xs:
-            ax.scatter(xs, ys, s=80, color='#5BC0EB', marker='^', edgecolors='#5BC0EB', label='Top 10 (MCTS)')
+            ax.scatter(xs, ys, s=45, color='#5BC0EB', marker='^', edgecolors='#1a7fa8',
+                       linewidths=0.5, alpha=0.65, label='Top 10 (MCTS)')
 
-    # (Top10 plotting handled earlier to control marker style)
+    # Annotate which starting material produced this Top-10 overlay, and how
+    # far (in MCTS move-graph hops) it is from the true global-best compound.
+    if start_label is None:
+        start_label, start_dist = describe_mcts_run_starting_material(mcts_run_dir, repo_root)
 
-    ax.set_xlabel(r"$\gamma \cdot r_{\mathrm{DOS}}$" + f" (γ={gamma:g})")
+    ax.set_xlabel(r"$\lambda_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$")
     ax.set_ylabel(r"$E_{\mathrm{Hull}}$ (eV/atom)")
     ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
     # Create a clean legend with specific marker styles so Top10 appears as a triangle
@@ -370,15 +419,19 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
     # All compounds: small light-gray circle (no line)
     legend_handles.append(Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='#D0D0D0', markeredgecolor='#D0D0D0', markersize=6, label='All Compounds'))
     # Top10 (MCTS): light blue filled triangle (no line)
-    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='#5BC0EB', markersize=8, label='Top 10 (MCTS)'))
+    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='#1a7fa8', markersize=8, label='Top 10 (MCTS)'))
     # Unsuccessful: purple unfilled square (no line)
     legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='none', markeredgecolor='#9467bd', markersize=8, label='Unsuccessful Synthesis'))
     # Successful: purple filled square with purple edge (no line)
     legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='#9467bd', markeredgecolor='#9467bd', markersize=9, label='Successful Synthesis'))
     ax.legend(handles=legend_handles, fontsize=8)
     plt.tight_layout()
+    if start_label is not None:
+        dist_str = f", d={start_dist} to global best" if start_dist is not None else ""
+        fig.text(0.5, -0.02, f"Top 10 (MCTS) from {start_label} start{dist_str}",
+                  ha='center', va='top', fontsize=7)
     out = out_dir / 'ehull_vs_rdos.png'
-    fig.savefig(out, dpi=300)
+    fig.savefig(out, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -509,7 +562,7 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
         f.write(f'% full {len(global_ranks)}-compound exhaustive U-only design space (search coverage check).\n')
         f.write('\\begin{tabular}{rrlrrrrc}\n')
         f.write('\\toprule\n')
-        f.write('Rank & True Rank & Name & $\\gamma \\cdot r_{\\mathrm{DOS}}$ ($\\gamma$='
+        f.write('MCTS Rank & True Rank & Name & $\\gamma \\cdot r_{\\mathrm{DOS}}$ ($\\gamma$='
                 f'{gamma:g}) & $r_{{E_{{\\mathrm{{Hull}}}}}}$ & Composite & E\\_hull & Synth' + eol)
         f.write('\\midrule\n')
         for rank, global_rank, name, rdos, ehull_r, comp, ehull, synth in rows:
@@ -561,110 +614,79 @@ def _set_plateau_xlim(ax, curves, buffer_frac=0.25, tol_frac=0.01, ignore_first=
         ax.set_xlim(0, xmax)
 
 
-def plot_composite_convergence(out_dir: Path):
-    # Load convergence history and composite CSV
-    conv_csv = out_dir / 'convergence_history.csv'
-    composite_csv = out_dir / 'all_compounds_by_composite_score.csv'
-    if not conv_csv.exists() or not composite_csv.exists():
-        print('Skipping composite_convergence: missing files')
-        return
+def _metal_move_neighbors(z):
+    """Transition-metal neighbor atomic numbers (same-period +-1, same-group
+    +-18/+-32). Mirrors the move rules in mcts_crystal/node.py's
+    _determine_possible_moves - kept in sync manually since that method
+    operates on an Atoms object's atomic numbers, not bare integers."""
+    if 22 <= z <= 30:
+        if z == 22:
+            return [22, 23, 40]
+        if z == 30:
+            return [29, 30, 48]
+        return [z - 1, z, z + 1, z + 18]
+    if 40 <= z <= 48:
+        if z == 40:
+            return [40, 41, 72, 22]
+        if z == 48:
+            return [47, 48, 80, 30]
+        return [z - 1, z, z + 1, z + 32, z - 18]
+    if 72 <= z <= 80:
+        if z == 72:
+            return [72, 73, 40]
+        if z == 80:
+            return [79, 80, 48]
+        return [z - 1, z, z + 1, z - 32]
+    return [z]
 
-    df_conv = pd.read_csv(conv_csv)
-    df_comp = pd.read_csv(composite_csv)
-    composite_lookup = dict(zip(df_comp['name'], df_comp['composite_score']))
 
-    formulas_seen = set()
-    best_ehull_reward_history = []
-    # Track raw best rDOS history (plot raw r_DOS, not gamma-weighted)
-    best_weighted_rdos_history = []
-    best_rdos_max_history = []
+_GIV_CHAIN = [14, 32, 50, 82]  # Si, Ge, Sn, Pb
 
-    gamma = load_gamma()
 
-    # best_reward is MCTS's own exact running-max composite score (tracked
-    # directly in MCTS.max_reward_history) - no need to reconstruct an
-    # approximation of it from the best_e_form/best_e_hull/best_rdos formula
-    # columns below, which can miss compounds that were visited but never
-    # individually flagged as the best e_form/e_hull/rDOS.
-    best_composite_history = df_conv['best_reward'].tolist() if 'best_reward' in df_conv.columns else []
+def _giv_move_neighbors(z):
+    """Group-IV neighbor atomic numbers: chain-restricted Si<->Ge<->Sn<->Pb.
+    Mirrors mcts_crystal/node.py's _determine_possible_moves."""
+    idx = _GIV_CHAIN.index(z)
+    neighbors = [z]
+    if idx > 0:
+        neighbors.append(_GIV_CHAIN[idx - 1])
+    if idx < len(_GIV_CHAIN) - 1:
+        neighbors.append(_GIV_CHAIN[idx + 1])
+    return neighbors
 
-    for _, row in df_conv.iterrows():
-        for col in ['best_e_form_formula', 'best_e_hull_formula', 'best_rdos_formula']:
-            if col in df_conv.columns and pd.notna(row[col]):
-                formulas_seen.add(row[col])
 
-        # Determine the component breakdown (ehull_reward, r_DOS) of whichever
-        # of the formulas above currently has the highest composite score -
-        # still an approximation, since the column above doesn't carry its
-        # own component breakdown, but it's the best proxy available without
-        # re-deriving the actual winning node's components from the pickle.
-        best_comp = float('-inf')
-        best_ehull = np.nan
-        best_rdos = np.nan
-        # track max rDOS among all seen formulas (monotonic)
-        current_max_rdos = float('-inf')
+def _bfs_distances(start, neighbor_fn):
+    """Shortest-path distance from `start` to every node reachable via
+    neighbor_fn(node) -> list of neighbor nodes."""
+    dist = {start: 0}
+    queue = deque([start])
+    while queue:
+        n = queue.popleft()
+        for nb in neighbor_fn(n):
+            if nb not in dist:
+                dist[nb] = dist[n] + 1
+                queue.append(nb)
+    return dist
 
-        for f in formulas_seen:
-            if f in composite_lookup:
-                comp = composite_lookup[f]
-                if comp > best_comp:
-                    best_comp = comp
-                    # Try to extract component values from df_comp
-                    try:
-                        rowf = df_comp[df_comp['name'] == f].iloc[0]
-                        best_ehull = rowf.get('ehull_reward', np.nan)
-                        best_rdos = rowf.get('r_DOS', np.nan)
-                    except Exception:
-                        best_ehull = np.nan
-                        best_rdos = np.nan
-            # also compute max rDOS among all seen formulas
-            try:
-                rowf2 = df_comp[df_comp['name'] == f].iloc[0]
-                rtmp = rowf2.get('r_DOS', np.nan)
-                if pd.notna(rtmp):
-                    current_max_rdos = max(current_max_rdos, float(rtmp))
-            except Exception:
-                pass
 
-        if current_max_rdos == float('-inf'):
-            current_max_rdos = 0.0
+def _edit_distance_to_target(tm_symbol, giv_symbol, target_tm, target_giv):
+    """Number of MCTS moves from (tm_symbol, giv_symbol) to (target_tm,
+    target_giv). node.py's expand() changes the metal AND group-IV element
+    simultaneously every move (cartesian product of their neighbor sets), so
+    the two attributes advance in parallel - the distance is the max of
+    their independent graph distances, not the sum."""
+    metal_dist = _bfs_distances(atomic_numbers[target_tm], _metal_move_neighbors)
+    giv_dist = _bfs_distances(atomic_numbers[target_giv], _giv_move_neighbors)
+    return max(metal_dist[atomic_numbers[tm_symbol]], giv_dist[atomic_numbers[giv_symbol]])
 
-        best_ehull_reward_history.append(0.0 if np.isnan(best_ehull) else best_ehull)
-        # store gamma * r_DOS for the best-composite compound (the actual composite-score component)
-        best_weighted_rdos_history.append(0.0 if np.isnan(best_rdos) else (best_rdos * gamma))
-        # store monotonic max rDOS seen so far (unweighted)
-        best_rdos_max_history.append(current_max_rdos)
 
-    if not best_composite_history:
-        # Fallback for older convergence_history.csv files without best_reward
-        best_composite_history = [0.0] * len(df_conv)
-
-    # Iteration 0 is a pre-search sentinel (best_reward = -10.0, not a real
-    # composite score), which would otherwise dominate the y-axis and
-    # compress the rest of the curve into an unreadable sliver.
-    start = 1 if len(best_composite_history) > 1 else 0
-
-    # Plot with tighter publication-friendly size and higher DPI
-    fig, ax = plt.subplots(figsize=(3, 3))
-    ax.plot(range(start, len(best_composite_history)), best_composite_history[start:],
-            lw=2, color='#1f77b4', label='Best Composite')
-    # Best ehull_reward labeled as r_{E_{Hull}} with E italic and Hull roman
-    ax.plot(range(start, len(best_ehull_reward_history)), best_ehull_reward_history[start:],
-            lw=1.5, color='#ff7f0e', label=r"Best $r_{E_{\mathrm{Hull}}}$")
-    # Best gamma * r_DOS (component of composite), explicitly labeled with the gamma factor
-    ax.plot(range(start, len(best_weighted_rdos_history)), best_weighted_rdos_history[start:],
-            lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
-
-    _set_plateau_xlim(ax, [best_composite_history])
-
-    ax.set_xlabel('Iteration')
-    ax.set_ylabel('Score')
-    # zero baseline removed per publication formatting
-    ax.legend(fontsize=7)
-    plt.tight_layout()
-    out = out_dir / 'composite_convergence.png'
-    fig.savefig(out, dpi=600)
-    plt.close(fig)
+def _parse_tm_giv(formula):
+    """Pull out the transition-metal and group-IV element symbols from a
+    1-6-6 formula string (f-block element, if any, is ignored)."""
+    matches = re.findall(r'([A-Z][a-z]?)(\d*)', formula)
+    tm = next((e for e, _ in matches if e in TRANSITION_METALS), None)
+    giv = next((e for e, _ in matches if e in GROUP_IV), None)
+    return tm, giv
 
 
 def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Path):
@@ -676,7 +698,16 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
     see sensitivity_studies/scripts/common.py BASELINE), varying only
     transition_metal/group_iv, with 5 seeds per starting material. Each line
     below is the mean best-composite-so-far across those 5 seeds, with a
-    shaded band showing seed-to-seed spread.
+    shaded 10th-90th percentile band (not mean +/- std: std is a parametric
+    estimate that can extend past the best value any seed actually reached,
+    which would misleadingly suggest the search found something better than
+    it did. A percentile band is computed directly from the observed seeds,
+    so it can never exceed what was actually seen).
+
+    Each legend entry also reports the move-graph edit distance from that
+    starting material to the true global-best U-only compound (per
+    compute_global_u_only_ranks), to show that starting further away from
+    the optimum is *why* that material converges slower.
     """
     sweep_csv = (mcts_materials_root / 'sensitivity_studies' / 'results'
                  / 'starting_material_sweep' / 'convergence_data.csv')
@@ -684,9 +715,20 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
         print('Skipping convergence_by_starting_material: missing', sweep_csv)
         return
 
+    global_ranks = compute_global_u_only_ranks(mcts_materials_root)
+    best_key = next((k for k, r in global_ranks.items() if r == 1), None)
+    target_tm, target_giv = (None, None)
+    if best_key is not None:
+        target_tm = next((e for e in best_key if e in TRANSITION_METALS), None)
+        target_giv = next((e for e in best_key if e in GROUP_IV), None)
+
     df = pd.read_csv(sweep_csv)
     value_order = list(df['value'].unique())  # preserve the sweep's own (graph-distance) ordering
-    stats = df.groupby(['value', 'iteration'])['best_reward'].agg(['mean', 'std']).reset_index()
+
+    def _pctl_agg(s):
+        return pd.Series({'mean': s.mean(), 'p10': np.percentile(s, 10), 'p90': np.percentile(s, 90)})
+
+    stats = df.groupby(['value', 'iteration'])['best_reward'].apply(_pctl_agg).unstack().reset_index()
 
     fig, ax = plt.subplots(figsize=(4, 3.2))
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
@@ -696,20 +738,25 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
         # Keep iteration 0 in the array used for x-axis truncation below, so
         # its index stays aligned with real iteration numbers; the sentinel
         # best_reward=-10.0 at iteration 0 is excluded only from the drawn
-        # line/band so it doesn't dominate the y-axis (same as composite_convergence).
+        # line/band so it doesn't dominate the y-axis.
         curves_for_xlim.append(g['mean'].to_numpy())
 
         g_plot = g[g['iteration'] >= 1]
-        label = format_name_u_tm_giv(value.split(' (')[0])
+        formula = value.split(' (')[0]
+        label = format_name_u_tm_giv(formula)
+        if target_tm and target_giv:
+            tm, giv = _parse_tm_giv(formula)
+            if tm and giv:
+                d = _edit_distance_to_target(tm, giv, target_tm, target_giv)
+                label = f"{label} (d={d})"
         ax.plot(g_plot['iteration'], g_plot['mean'], lw=1.8, color=color, label=label)
-        std = g_plot['std'].fillna(0.0)
-        ax.fill_between(g_plot['iteration'], g_plot['mean'] - std, g_plot['mean'] + std,
+        ax.fill_between(g_plot['iteration'], g_plot['p10'], g_plot['p90'],
                          color=color, alpha=0.2, linewidth=0)
 
     _set_plateau_xlim(ax, curves_for_xlim)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Best Composite Score')
-    ax.legend(fontsize=7, title='Starting material', title_fontsize=7)
+    ax.legend(fontsize=7, title='Starting material (edit dist. to best)', title_fontsize=7)
     plt.tight_layout()
     out = out_dir / 'convergence_by_starting_material.png'
     fig.savefig(out, dpi=600)
@@ -737,19 +784,54 @@ def main():
     df_sorted.to_csv(out_dir / 'all_compounds_by_composite_score.csv', index=False)
     df_sorted.head(10).to_csv(out_dir / 'top10_compounds_by_composite_score.csv', index=False)
     print('Saved composite CSVs')
-    # write LaTeX table of top 15
+
+    # Supplementary run from a starting material d=5 (out of max 9) from the
+    # true global best - far enough that search quality/coverage is visibly
+    # imperfect, without being the single most extreme case (see
+    # describe_mcts_run_starting_material / sensitivity_studies discussion).
+    # If present, keep its composite CSV in sync too.
+    d5_compounds_csv = out_dir / 'd5_start_run' / 'all_compounds.csv'
+    if d5_compounds_csv.exists():
+        df_d5 = pd.read_csv(d5_compounds_csv)
+        compute_composite(df_d5).to_csv(
+            d5_compounds_csv.parent / 'all_compounds_by_composite_score.csv', index=False)
+        print('Saved d5_start_run composite CSV')
+
+    # write LaTeX table of top 15 - sourced from the same d=5-starting-
+    # material run (d5_start_run/) as the ehull_vs_rdos Top-10 overlay
+    # and the radial tree, so all three reflect one consistent MCTS search
+    # rather than mixing in the separate main Cr6Sn6U run.
+    table_df_sorted = df_sorted
+    if d5_compounds_csv.exists():
+        table_df_sorted = compute_composite(pd.read_csv(d5_compounds_csv))
     try:
-        write_top15_table(df_sorted, out_dir, repo_root)
+        write_top15_table(table_df_sorted, out_dir, repo_root)
     except Exception:
         pass
 
     # Generate figures
-    plot_ehull_vs_rdos(repo_root, out_dir)
-    plot_composite_convergence(out_dir)
+    # ehull_vs_rdos's "Top 10 (MCTS)" overlay comes from the d=5-starting-
+    # material supplementary run (see d5_start_run/), not this study's main
+    # Cr6Sn6U run, so the figure shows search quality from a starting point
+    # far enough from the optimum that coverage gaps are visible. Falls back
+    # to the main run if that supplementary run hasn't been generated yet.
+    d5_start_dir = out_dir / 'd5_start_run'
+    mcts_run_dir = d5_start_dir if (d5_start_dir / 'mcts_object.pkl').exists() else out_dir
+    start_label, start_dist = describe_mcts_run_starting_material(mcts_run_dir, script_dir.parents[1])
+    # Shared with create_composite_radial_tree.py (a separate subprocess, so it
+    # can't just call describe_mcts_run_starting_material() itself without a
+    # circular import) via this small sidecar file.
+    if start_label is not None:
+        with open(mcts_run_dir / 'starting_material_info.json', 'w') as f:
+            json.dump({'label': start_label, 'distance': start_dist}, f)
+    plot_ehull_vs_rdos(repo_root, out_dir, mcts_run_dir=mcts_run_dir,
+                       start_label=start_label, start_dist=start_dist)
     plot_convergence_by_starting_material(script_dir.parents[1], out_dir)
 
-    # Generate radial tree via existing script (it writes PNG)
-    subprocess.run([sys.executable, str(out_dir / 'create_composite_radial_tree.py')], check=False)
+    # Generate radial tree via existing script (it writes PNG). Uses the same
+    # d=5-starting-material run as the ehull_vs_rdos Top-10 overlay above.
+    subprocess.run([sys.executable, str(out_dir / 'create_composite_radial_tree.py'),
+                     '--run-dir', str(mcts_run_dir)], check=False)
 
     # Move any PNGs generated into the subsidiary figures folder
     for p in out_dir.glob('*.png'):
