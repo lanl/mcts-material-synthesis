@@ -388,22 +388,28 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     # Top10 overlay if available (from mcts_run_dir) - light-blue triangles for
     # MCTS predictions. Smaller + semi-transparent so the several entries that
     # sit very close together (e.g. similar r_DOS/e_hull) visibly darken where
-    # they overlap, instead of looking like fewer than 10 markers.
+    # they overlap, instead of looking like fewer than 10 markers. Matched by
+    # element-set key (not exact name string) since the MCTS run's formula
+    # ordering (e.g. "Sn6Ti6U") doesn't always match the master dataset's
+    # (e.g. "Ti6Sn6U") - an exact-string lookup here silently dropped points.
     composite_csv = mcts_run_dir / 'all_compounds_by_composite_score.csv'
     if composite_csv.exists():
         df_comp = pd.read_csv(composite_csv)
         top10 = df_comp.head(10)
-        mace_lookup = dict(zip(df_u['name'], zip(df_u['e_above_hull'], df_u.get('r_dos', df_u.get('r_DOS', pd.Series(0.0))))))
+        mace_lookup = {}
+        for _, r in df_u.iterrows():
+            mace_lookup[_formula_key(r['name'])] = (r['e_above_hull'], r.get('r_dos', r.get('r_DOS', 0.0)))
         xs, ys = [], []
         for _, row in top10.iterrows():
             name = row['name'] if 'name' in row else row.get('formula')
-            if name in mace_lookup:
-                e_hull, rdos = mace_lookup[name]
+            key = _formula_key(name)
+            if key in mace_lookup:
+                e_hull, rdos = mace_lookup[key]
                 xs.append(float(rdos) * gamma)
                 ys.append(e_hull)
         if xs:
-            ax.scatter(xs, ys, s=45, color='#5BC0EB', marker='^', edgecolors='#1a7fa8',
-                       linewidths=0.5, alpha=0.65, label='Top 10 (MCTS)')
+            ax.scatter(xs, ys, s=45, color='#5BC0EB', marker='^', edgecolors='none',
+                       alpha=0.65, label='Top 10 (MCTS)')
 
     # Annotate which starting material produced this Top-10 overlay, and how
     # far (in MCTS move-graph hops) it is from the true global-best compound.
@@ -419,7 +425,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     # All compounds: small light-gray circle (no line)
     legend_handles.append(Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='#D0D0D0', markeredgecolor='#D0D0D0', markersize=6, label='All Compounds'))
     # Top10 (MCTS): light blue filled triangle (no line)
-    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='#1a7fa8', markersize=8, label='Top 10 (MCTS)'))
+    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='none', markersize=8, label='Top 10 (MCTS)'))
     # Unsuccessful: purple unfilled square (no line)
     legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='none', markeredgecolor='#9467bd', markersize=8, label='Unsuccessful Synthesis'))
     # Successful: purple filled square with purple edge (no line)
