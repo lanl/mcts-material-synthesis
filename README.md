@@ -21,6 +21,7 @@ The search focuses on intermetallic compounds with transition metals, Group IV e
 - **High-throughput energy calculations** using cached MACE results
 - **Comprehensive visualization** including tree structures, energy distributions, and iteration progress
 - **Automated analysis** with efficiency metrics and compound ranking
+- **Hyperparameter sensitivity studies** (replicate-run convergence sweeps) for calibrating MCTS-algorithm parameters - see [Sensitivity Studies](#sensitivity-studies)
 
 ## Installation
 
@@ -217,7 +218,7 @@ After running MCTS, the output directory contains:
 ### Data Files
 
 - **`all_compounds.csv`**: Complete list of all explored compounds with energies and statistics
-- **`convergence_history.csv`**: Best E_form/E_hull/rDOS compound found, per iteration
+- **`convergence_history.csv`**: Best composite reward (`best_reward`), and best E_form/E_hull/rDOS compound found, per iteration
 - **`mcts_report.txt`**: Detailed text report with search efficiency metrics
 - **`mcts_object.pkl`**: Pickled `MCTS` object, for offline re-analysis/plotting (e.g. `create_composite_radial_tree.py`)
 
@@ -282,6 +283,9 @@ mcts_materials/
 │   └── mat_Pb6U1W6_sg191.cif      # Default starting structure
 ├── analysis/
 │   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures
+├── sensitivity_studies/           # Replicate-run hyperparameter sensitivity sweeps (see Sensitivity Studies)
+│   ├── scripts/                   # Generation scripts (run_all.sh reproduces everything)
+│   └── results/                   # Per-sweep convergence_data.csv + figures
 ├── high_throughput_mace_results.full.csv  # NOT bundled - see Data Availability
 └── doscar_peaks_data_with_U.csv            # NOT bundled - see Data Availability
 ```
@@ -294,6 +298,10 @@ mcts_materials/
 - `generate_plots.sh`: regenerates all figures (composite-score bar charts, E_hull-vs-rDOS scatter, convergence plot, composite-colored radial tree) via `generate_figures.py`, plus `generate_top10_report.py` for the ranked compound list
 
 This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
+
+## Sensitivity Studies
+
+`sensitivity_studies/` holds replicate-run sensitivity sweeps (5 seeds x 500 iterations per value tested) used to calibrate MCTS-algorithm hyperparameters - `exploration_constant`, starting material, `selection_mode`, and `n_rollout`/`rollout_depth`/`termination_limit` - against the calibrated U-only `ehull_rdos` baseline. The reward formula's physics-informed constants (ehull_reward sharpness=120, E_hull threshold=0.05, rDOS sigma=0.5) are intentionally not swept. Run `bash sensitivity_studies/scripts/run_all.sh` to reproduce everything; see `sensitivity_studies/README.md` for full methodology and findings (e.g. starting material is the dominant factor in this search space, while `exploration_constant`/`selection_mode` show no measurable effect for a specific, explained structural reason).
 
 ## Algorithm Details
 

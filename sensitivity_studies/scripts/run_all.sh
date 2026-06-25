@@ -1,0 +1,44 @@
+#!/bin/bash
+# Run all sensitivity sweeps + generate all figures.
+# Each sweep is ~25 replicate MCTS runs (5 values x 5 seeds, or 3x3x5 for the
+# rollout-params sweep) at 500 iterations each; all U-only ehull_rdos
+# compounds are already cached in high_throughput_mace_results.full.csv, so
+# this completes in well under 20 minutes total (no live MACE/MP calls).
+
+set -e
+cd "$(dirname "${BASH_SOURCE[0]}")"
+RESULTS="../results"
+
+echo "=== c (exploration_constant) sweep ==="
+python sweep_c.py
+python plot_sweep.py "${RESULTS}/c_sweep/convergence_data.csv" \
+    "Exploration constant c" "${RESULTS}/c_sweep/convergence_vs_c.png"
+
+echo ""
+echo "=== starting material sweep ==="
+python sweep_starting_material.py
+python plot_sweep.py "${RESULTS}/starting_material_sweep/convergence_data.csv" \
+    "Starting material" "${RESULTS}/starting_material_sweep/convergence_vs_starting_material.png"
+
+echo ""
+echo "=== selection_mode sweep ==="
+python sweep_selection_mode.py
+python plot_sweep.py "${RESULTS}/selection_mode_sweep/convergence_data.csv" \
+    "Selection mode" "${RESULTS}/selection_mode_sweep/convergence_vs_selection_mode.png"
+
+echo ""
+echo "=== rollout/termination params sweep ==="
+python sweep_rollout_params.py
+python plot_sweep.py "${RESULTS}/rollout_params_sweep/convergence_data_n_rollout.csv" \
+    "n_rollout" "${RESULTS}/rollout_params_sweep/convergence_vs_n_rollout.png"
+python plot_sweep.py "${RESULTS}/rollout_params_sweep/convergence_data_rollout_depth.csv" \
+    "rollout_depth (n_rollout=3)" "${RESULTS}/rollout_params_sweep/convergence_vs_rollout_depth.png"
+python plot_sweep.py "${RESULTS}/rollout_params_sweep/convergence_data_termination_limit.csv" \
+    "termination_limit" "${RESULTS}/rollout_params_sweep/convergence_vs_termination_limit.png"
+# termination_limit's effect is on search length, not the reward curve (the
+# optimum is found well before termination ever triggers) - see this instead:
+python plot_termination_iterations.py "${RESULTS}/rollout_params_sweep/convergence_data_termination_limit.csv" \
+    "termination_limit: search length" "${RESULTS}/rollout_params_sweep/iterations_vs_termination_limit.png"
+
+echo ""
+echo "=== ALL SENSITIVITY SWEEPS COMPLETE ==="
