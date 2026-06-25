@@ -24,3 +24,4 @@ mcts_results/
 *.pkl
 # Local experimental compounds list (do not commit)
 analysis/ehull_rdos_u_only_study/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study/*.csv

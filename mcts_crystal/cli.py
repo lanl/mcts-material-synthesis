@@ -401,12 +401,6 @@ def main():
         # (energy_distribution, iteration_progress, energy_above_hull_*, formation_energy_by_elements)
         # Only essential visualizations are generated to avoid duplicate/unused figures.
 
-        # Generate reports
-        analyzer.create_summary_report(
-            mcts,
-            save_path=output_dir / "mcts_report.txt"
-        )
-
         # Export data
         analyzer.export_results(
             mcts.stat_dict,
@@ -457,7 +451,6 @@ def main():
     logger.info(f"   - energy_above_hull_progress.png - Energy above hull search progress")
     logger.info(f"   - formation_energy_by_elements.png - Formation energy by transition metal/Group IV")
     logger.info(f"   - energy_above_hull_by_elements.png - Energy above hull by transition metal/Group IV")
-    logger.info(f"   - mcts_report.txt - Detailed text report")
     logger.info(f"   - all_compounds.csv - All discovered compounds data")
 
     logger.info(f"\nTo run again:")

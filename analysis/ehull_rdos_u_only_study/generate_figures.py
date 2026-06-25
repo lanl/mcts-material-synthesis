@@ -3,8 +3,6 @@
 Generate publication figures as PNGs directly from MCTS outputs and high-throughput data.
 
 This script replaces the prior gnuplot/prepare pipeline and writes PNG files:
-- top10_by_composite.png
-- top10_ehull_rdos_bars.png
 - ehull_vs_rdos.png
 - composite_convergence.png
 - radial_tree_composite.png (delegates to create_composite_radial_tree.py)
@@ -32,6 +30,7 @@ import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from synthesized_compounds import SYNTHESIZED_COMPOUNDS
+from create_composite_radial_tree import F_BLOCK, TRANSITION_METALS, GROUP_IV
 
 DEFAULT_GAMMA = 0.0001
 
@@ -48,6 +47,10 @@ def load_gamma(default: float = DEFAULT_GAMMA) -> float:
         try:
             with open(config_path) as f:
                 config = json.load(f)
+            rollout_method = config.get('rollout_method')
+            if rollout_method is not None and not str(rollout_method).startswith('ehull_rdos'):
+                print(f"Warning: config.json rollout_method={rollout_method!r}, "
+                      "but figures assume the ehull+rDOS composite score (beta=1.0, gamma from config).")
             return float(config.get('gamma', default))
         except Exception:
             pass
@@ -173,44 +176,6 @@ def load_master_mace(repo_root: Path):
         dos_by_key[key] = max(dos_by_key.get(key, float('-inf')), float(v))
 
     return df_mace, dos_by_key
-
-
-def plot_top10(df_sorted, out_dir: Path):
-    top10 = df_sorted.head(10)
-
-    # Horizontal stacked bar (composite components)
-    fig, ax = plt.subplots(figsize=(4, 4))
-    ranks = np.arange(1, len(top10) + 1)
-    ehull_vals = top10['ehull_reward'].values
-    # Plot gamma * r_DOS (the actual composite-score component), not raw r_DOS
-    rdos_vals = top10['weighted_r_DOS'].values
-
-    ax.barh(ranks, ehull_vals, color="#ff7f0e", edgecolor='k', label=r"$r_{E_{\mathrm{Hull}}}$")
-    ax.barh(ranks, rdos_vals, left=ehull_vals, color="#2ca02c", edgecolor='k', label=r"$\gamma \cdot r_{\mathrm{DOS}}$")
-    ax.set_yticks(ranks)
-    ax.set_yticklabels(top10['name'].values)
-    ax.invert_yaxis()
-    ax.set_xlabel('Composite components')
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    out = out_dir / 'top10_by_composite.png'
-    fig.savefig(out, dpi=300)
-    plt.close(fig)
-
-    # Grouped vertical bars: E_hull and gamma * r_DOS
-    fig, ax = plt.subplots(figsize=(4, 4))
-    x = np.arange(len(top10))
-    width = 0.35
-    ax.bar(x - width/2, top10['e_above_hull'].values, width, label='E_hull', color="#ff7f0e")
-    ax.bar(x + width/2, top10['weighted_r_DOS'].values, width, label=r"$\gamma \cdot r_{\mathrm{DOS}}$", color="#2ca02c")
-    ax.set_xticks(x)
-    ax.set_xticklabels(top10['name'].values, rotation=45, ha='right')
-    ax.set_ylabel(r"E_hull / $\gamma \cdot r_{\mathrm{DOS}}$")
-    ax.legend()
-    plt.tight_layout()
-    out = out_dir / 'top10_ehull_rdos_bars.png'
-    fig.savefig(out, dpi=300)
-    plt.close(fig)
 
 
 def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
@@ -437,12 +402,84 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path):
     plt.close(fig)
 
 
-def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
+def format_name_u_tm_giv(name):
+    """Reorder a 1-6-6 formula as U, transition metal, group IV with the 6's
+    rendered as LaTeX subscripts, e.g. 'Fe6Ge6U' -> 'UFe$_6$Ge$_6$'.
+
+    Reuses the same element categorization as create_composite_radial_tree.py
+    so the ordering convention stays consistent across figures and tables.
+    """
+    matches = re.findall(r'([A-Z][a-z]?)(\d*)', str(name))
+    re_elem, tm_part, giv_part = None, None, None
+    for elem, count in matches:
+        if not elem:
+            continue
+        if elem in F_BLOCK:
+            re_elem = elem
+        elif elem in TRANSITION_METALS:
+            tm_part = (elem, count)
+        elif elem in GROUP_IV:
+            giv_part = (elem, count)
+    if re_elem and tm_part and giv_part:
+        tm_elem, tm_n = tm_part
+        giv_elem, giv_n = giv_part
+        tm_sub = f"$_{{{tm_n}}}$" if tm_n else ''
+        giv_sub = f"$_{{{giv_n}}}$" if giv_n else ''
+        return f"{re_elem}{tm_elem}{tm_sub}{giv_elem}{giv_sub}"
+    return str(name)
+
+
+def _formula_key(name):
+    """Element-set key (sorted, non-f-block) used to match a formula across
+    datasets regardless of element ordering, e.g. 'Fe6Ge6U' -> ('Fe', 'Ge')."""
+    if pd.isna(name):
+        return ()
+    s = str(name)
+    if '-' in s:
+        parts = [p for p in re.split('[^A-Za-z]', s) if p]
+    else:
+        parts = re.findall(r'[A-Z][a-z]?', s)
+    return tuple(sorted(p for p in parts if p not in F_BLOCK))
+
+
+def compute_global_u_only_ranks(repo_root: Path):
+    """Rank every compound in the full high-throughput U-only design space
+    (U present, no other f-block element) by the same beta=1.0/gamma composite
+    score used everywhere else, so MCTS top-15 results can be checked against
+    the true best-in-space compounds (search coverage, not just local quality).
+
+    Returns {element_key: global_rank} with rank 1 = best composite score.
+    """
+    df_mace, dos_by_key = load_master_mace(repo_root)
+    if df_mace is None or not len(df_mace):
+        return {}
+
+    try:
+        from mcts_crystal.node import ehull_reward
+    except Exception:
+        def ehull_reward(x):
+            return -np.tanh(120.0 * (x - 0.05))
+
+    gamma = load_gamma()
+    df = df_mace.copy()
+    df['name'] = df.get('name', df.get('formula'))
+    df['elem_set'] = df['name'].apply(lambda n: set(re.findall(r'[A-Z][a-z]?', str(n))))
+    # U-only design space: contains U, and no other f-block/rare-earth element
+    df = df[df['elem_set'].apply(lambda s: 'U' in s and not (s & (F_BLOCK - {'U'})))].copy()
+    df['key'] = df['name'].apply(_formula_key)
+    df['r_dos'] = df['key'].map(lambda k: dos_by_key.get(k, 0.0))
+    df['composite_score'] = df['e_above_hull'].apply(ehull_reward) + gamma * df['r_dos']
+    df = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
+    return {key: rank for rank, key in enumerate(df['key'], start=1)}
+
+
+def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
     """Write a LaTeX table of the top 15 compounds with requested columns."""
     tables_dir = out_dir / 'tables'
     tables_dir.mkdir(parents=True, exist_ok=True)
     top15 = df_sorted.head(15).copy()
     gamma = load_gamma()
+    global_ranks = compute_global_u_only_ranks(repo_root)
     # ensure columns exist
     if 'r_DOS' not in top15.columns and 'dos_reward' in top15.columns:
         top15['r_DOS'] = top15['dos_reward']
@@ -474,24 +511,30 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path):
     synth_sets = [elem_set(n) for n in synthesized_names]
 
     rows = []
-    for _, r in top15.iterrows():
+    for rank, (_, r) in enumerate(top15.iterrows(), start=1):
         name = r.get('name', r.get('formula', ''))
         rdos = float(r.get('weighted_r_DOS', 0.0)) if pd.notna(r.get('weighted_r_DOS', None)) else 0.0
         ehull_r = float(r.get('ehull_reward', 0.0)) if pd.notna(r.get('ehull_reward', None)) else 0.0
         comp = float(r.get('composite_score', 0.0)) if pd.notna(r.get('composite_score', None)) else 0.0
         ehull = float(r.get('e_above_hull', np.nan)) if pd.notna(r.get('e_above_hull', None)) else np.nan
         is_synth = any(elem_set(name) == s for s in synth_sets)
-        rows.append((name, rdos, ehull_r, comp, ehull, 'Yes' if is_synth else 'No'))
+        display_name = format_name_u_tm_giv(name)
+        global_rank = global_ranks.get(_formula_key(name))
+        rows.append((rank, global_rank, display_name, rdos, ehull_r, comp, ehull, 'Yes' if is_synth else 'No'))
 
+    eol = ' \\\\\n'  # LaTeX row terminator (literal "\\") followed by a real newline
     tex_path = tables_dir / 'top15_u_only.tex'
     with open(tex_path, 'w') as f:
-        f.write(f'% Top 15 compounds (U-only study). gamma={gamma:g}\n')
-        f.write('\\begin{tabular}{lrrrrc}\n')
+        f.write(f'% Top 15 compounds (U-only study). gamma={gamma:g}. True Rank = rank within the\n')
+        f.write(f'% full {len(global_ranks)}-compound exhaustive U-only design space (search coverage check).\n')
+        f.write('\\begin{tabular}{rrlrrrrc}\n')
         f.write('\\toprule\n')
-        f.write(f'Name & $\\gamma \\cdot r_{{\\mathrm{{DOS}}}}$ ($\\gamma$={gamma:g}) & $r_{{E_{{\\mathrm{{Hull}}}}}}$ & Composite & E\\_hull & Synth \\\\n')
+        f.write('Rank & True Rank & Name & $\\gamma \\cdot r_{\\mathrm{DOS}}$ ($\\gamma$='
+                f'{gamma:g}) & $r_{{E_{{\\mathrm{{Hull}}}}}}$ & Composite & E\\_hull & Synth' + eol)
         f.write('\\midrule\n')
-        for name, rdos, ehull_r, comp, ehull, synth in rows:
-            f.write(f"{name} & {rdos:.4f} & {ehull_r:.4f} & {comp:.4f} & {ehull:.4f} & {synth} \\\\n")
+        for rank, global_rank, name, rdos, ehull_r, comp, ehull, synth in rows:
+            gr = str(global_rank) if global_rank is not None else '--'
+            f.write(f"{rank} & {gr} & {name} & {rdos:.4f} & {ehull_r:.4f} & {comp:.4f} & {ehull:.4f} & {synth}" + eol)
         f.write('\\bottomrule\n')
         f.write('\\end{tabular}\n')
 
@@ -638,12 +681,11 @@ def main():
     print('Saved composite CSVs')
     # write LaTeX table of top 15
     try:
-        write_top15_table(df_sorted, out_dir)
+        write_top15_table(df_sorted, out_dir, repo_root)
     except Exception:
         pass
 
     # Generate figures
-    plot_top10(df_sorted, out_dir)
     plot_ehull_vs_rdos(repo_root, out_dir)
     plot_composite_convergence(out_dir)
 
