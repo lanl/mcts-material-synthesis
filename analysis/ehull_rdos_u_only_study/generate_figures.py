@@ -573,6 +573,20 @@ def plot_composite_convergence(out_dir: Path):
     # Best gamma * r_DOS (component of composite), explicitly labeled with the gamma factor
     ax.plot(best_weighted_rdos_history, lw=1.5, color='#2ca02c', label=r"Best $\gamma \cdot r_{\mathrm{DOS}}$")
 
+    # Truncate the x-axis around the transient: find where the (monotonic)
+    # best-composite curve last changes, then size the axis so that point
+    # sits at 75% of the width, leaving the final 25% as plateau context.
+    comp_arr = np.asarray(best_composite_history, dtype=float)
+    n_iter = len(comp_arr)
+    final_val = comp_arr[-1]
+    tol = 1e-9 * max(1.0, abs(final_val))
+    changed = np.where(np.abs(comp_arr - final_val) > tol)[0]
+    plateau_start = (changed[-1] + 1) if changed.size > 0 else 0
+    plateau_start = min(plateau_start, n_iter - 1)
+    if plateau_start > 0:
+        xmax = min(plateau_start / 0.75, n_iter - 1)
+        ax.set_xlim(0, xmax)
+
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Score')
     # zero baseline removed per publication formatting

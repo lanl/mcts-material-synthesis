@@ -77,21 +77,22 @@ def count_descendants(G, node):
 
 
 def radial_layout(G, root, radius_step=3.0):
-    """Compute a non-recursive radial layout positions based on BFS depth.
+    """Compute a radial tree layout that keeps each subtree within an angular wedge.
 
-    Places nodes at radius = depth * radius_step and evenly spaces nodes
-    at the same depth around the circle. This avoids recursion and handles
-    cycles by using shortest-path depths from the root.
+    Depth (radius) comes from shortest-path distance from the root. Angle is
+    assigned recursively: each node's children split its angular span,
+    weighted by subtree size, so a branch's descendants stay clustered near
+    that branch instead of being scattered around the full circle. This is
+    what keeps edges short and non-crossing rather than radiating across the
+    whole diagram.
     """
     pos = {}
     if root is None or root not in G:
         return pos
-    pos[root] = (0.0, 0.0)
 
     try:
         depths = nx.single_source_shortest_path_length(G, root)
     except Exception:
-        # Fallback: place all nodes in a circle if shortest paths fail
         nodes = list(G.nodes())
         n = len(nodes)
         for i, nkey in enumerate(nodes):
@@ -99,22 +100,53 @@ def radial_layout(G, root, radius_step=3.0):
             pos[nkey] = (radius_step * math.cos(theta), radius_step * math.sin(theta))
         return pos
 
-    # Group nodes by depth
-    depth_groups = {}
-    for nkey, d in depths.items():
-        depth_groups.setdefault(d, []).append(nkey)
+    # Build a BFS spanning tree so every node has exactly one parent for the
+    # purposes of layout, even if the underlying graph has cross-links.
+    bfs_tree = nx.bfs_tree(G, root)
+    children = {n: list(bfs_tree.successors(n)) for n in bfs_tree.nodes()}
 
-    max_depth = max(depth_groups.keys()) if depth_groups else 0
+    # Subtree leaf counts, used to proportionally size each branch's wedge.
+    leaf_count = {}
 
-    for d in range(1, max_depth + 1):
-        nodes_at_depth = depth_groups.get(d, [])
-        m = len(nodes_at_depth)
-        for i, nkey in enumerate(nodes_at_depth):
-            theta = 2.0 * math.pi * (i / max(1, m))
-            r = d * radius_step
-            x = r * math.cos(theta)
-            y = r * math.sin(theta)
-            pos[nkey] = (x, y)
+    def count_leaves(n):
+        kids = children.get(n, [])
+        if not kids:
+            leaf_count[n] = 1
+        else:
+            leaf_count[n] = sum(count_leaves(c) for c in kids)
+        return leaf_count[n]
+
+    count_leaves(root)
+
+    angle = {}
+
+    def assign_angles(n, theta_start, theta_end):
+        angle[n] = 0.5 * (theta_start + theta_end)
+        kids = children.get(n, [])
+        if not kids:
+            return
+        total = sum(leaf_count[c] for c in kids) or len(kids)
+        cursor = theta_start
+        span = theta_end - theta_start
+        for c in kids:
+            child_span = span * (leaf_count.get(c, 1) / total)
+            assign_angles(c, cursor, cursor + child_span)
+            cursor += child_span
+
+    assign_angles(root, 0.0, 2.0 * math.pi)
+
+    # Any node unreachable in the BFS tree (shouldn't normally happen) gets a
+    # fallback angle so layout never silently drops it.
+    fallback_nodes = [n for n in G.nodes() if n not in angle]
+    for i, n in enumerate(fallback_nodes):
+        angle[n] = 2.0 * math.pi * (i / max(1, len(fallback_nodes)))
+
+    for n in G.nodes():
+        d = depths.get(n, 0)
+        th = angle.get(n, 0.0)
+        r = d * radius_step
+        pos[n] = (r * math.cos(th), r * math.sin(th))
+    pos[root] = (0.0, 0.0)
 
     return pos
 
@@ -306,33 +338,25 @@ def main():
     # Color by gamma * r_dos, explicitly labeled below
     node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=DEFAULT_GAMMA)
 
-    # Compute per-node entropy from visit counts to separate points visually
-    total_visits = sum(visit_counts.values()) if visit_counts else 0.0
-    entropy_raw = {}
-    for nid, vc in visit_counts.items():
-        if total_visits > 0 and vc > 0:
-            p = vc / total_visits
-            entropy_raw[nid] = -p * math.log(p)
-        else:
-            entropy_raw[nid] = 0.0
-    ent_vals = list(entropy_raw.values()) if entropy_raw else [0.0]
-    ent_min, ent_max = min(ent_vals), max(ent_vals)
-    ent_norm = {n: (entropy_raw[n] - ent_min) / (ent_max - ent_min) if ent_max > ent_min else 0.0 for n in entropy_raw}
-
-    # Apply an entropy-driven radial offset to positions to spread nodes with different entropy
-    # Increase entropy offset to better separate nodes
-    extra_radius = 4.0
-    pos_entropy = {}
-    for nid, (x, y) in pos.items():
-        r = math.hypot(x, y)
-        theta = math.atan2(y, x)
-        ent = ent_norm.get(nid, 0.0)
-        r_new = r + ent * extra_radius
-        pos_entropy[nid] = (r_new * math.cos(theta), r_new * math.sin(theta))
-    pos = pos_entropy
-
     # Set global font size to 10pt for consistent publication text
     plt.rcParams.update({'font.size': 10})
+
+    # Smaller node markers leave room between circles/arrows at this node density
+    NODE_SIZE = 70
+
+    # Most edges in this graph are "revisit" links: the same composition reached
+    # from a second, later parent after already being placed via its first
+    # parent. Drawing every one of those as a bold arrow is what produced the
+    # tangled web in the original figure. Split edges into the BFS spanning
+    # tree (the structure the radial layout is actually built from) and the
+    # remaining cross-links, then render the cross-links as faint background
+    # threads and the spanning tree as the bold, arrowed structure on top.
+    if root_formula is not None and root_formula in G:
+        bfs_tree_edges = set(nx.bfs_tree(G, root_formula).edges())
+    else:
+        bfs_tree_edges = set()
+    tree_edges = [e for e in G.edges() if e in bfs_tree_edges]
+    cross_edges = [e for e in G.edges() if e not in bfs_tree_edges]
 
     # Create a wide figure: 6in wide x 2.75in tall with 3 panels
     fig, axes = plt.subplots(1, 3, figsize=(6, 2.75), constrained_layout=True)
@@ -340,17 +364,30 @@ def main():
     panels = [
         (axes[0], node_colors_comp, cmap_comp, norm_comp, 'Composite Score'),
         (axes[1], node_colors_ehull, cmap_ehull, norm_ehull, r"$r_{E_{\mathrm{Hull}}}$"),
-        (axes[2], node_colors_rdos, cmap_rdos, norm_rdos, r"$\gamma \cdot r_{\mathrm{DOS}}$" + f" (γ={DEFAULT_GAMMA:g})")
+        (axes[2], node_colors_rdos, cmap_rdos, norm_rdos,
+         r"$\lambda_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$")
     ]
 
     labels_abc = ['(a)', '(b)', '(c)']
     for i, (ax, ncols, cmap_m, norm_m, label) in enumerate(panels):
-        # Draw nodes
-        nx.draw_networkx_nodes(G, pos, ax=ax, node_color=ncols, edgecolors='black', linewidths=0.6, node_size=150)
-        # Draw directed edges from parent -> child only
-        nx.draw_networkx_edges(G, pos, ax=ax, edgelist=list(G.edges()),
-                               edge_color='gray', arrows=True, arrowsize=10,
-                               arrowstyle='-|>', connectionstyle='arc3,rad=0.0')
+        # Draw edges first so smaller nodes sit cleanly on top of arrow tips.
+        # Revisit cross-links: faint, thin, no arrowheads (background texture).
+        if cross_edges:
+            nx.draw_networkx_edges(G, pos, ax=ax, edgelist=cross_edges,
+                                   edge_color='gray', width=0.3, alpha=0.25, arrows=False)
+        # Spanning-tree edges: the actual branch structure, drawn bold with arrows.
+        nx.draw_networkx_edges(G, pos, ax=ax, edgelist=tree_edges,
+                               edge_color='dimgray', width=0.7, arrows=True, arrowsize=5,
+                               arrowstyle='-|>', connectionstyle='arc3,rad=0.08',
+                               node_size=NODE_SIZE, min_source_margin=2, min_target_margin=2)
+        # Draw nodes (shrunk so adjacent circles/arrows no longer overlap)
+        nx.draw_networkx_nodes(G, pos, ax=ax, node_color=ncols, edgecolors='black',
+                               linewidths=0.5, node_size=NODE_SIZE)
+        # Highlight the MCTS root as the starting node without changing its color encoding
+        if root_formula is not None and root_formula in pos:
+            rx, ry = pos[root_formula]
+            ax.scatter([rx], [ry], s=NODE_SIZE * 0.55, marker='*', facecolor='gold',
+                       edgecolors='black', linewidths=0.5, zorder=5)
         # add panel letter in top-left
         try:
             abc = labels_abc[i]
@@ -369,6 +406,10 @@ def main():
             cbar.ax.xaxis.tick_bottom()
         except Exception:
             pass
+
+    fig.text(0.5, -0.03,
+             '★ starting node (MCTS root)    bold arrow = expansion step    faint line = revisit of an existing composition',
+             ha='center', va='top', fontsize=7)
 
     # Ensure figures directory exists and save into it
     figures_dir = script_dir / 'figures'
