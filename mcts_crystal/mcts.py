@@ -55,6 +55,7 @@ class MCTS:
         self.stat_dict: Dict[str, List] = {}
         self.t_warmup = len(root.metal_move) * len(root.g_iv_move)
         self.max_reward = -10.0
+        self.max_reward_history = []  # max_reward (best composite reward so far) per iteration
         self.best_node: Optional[MCTSTreeNode] = None
         self.terminated = False
         self.epsilon = epsilon
@@ -482,6 +483,7 @@ class MCTS:
         self.best_rdos_formula_history.append(self.root.get_chemical_formula())
 
         self.n_unique_compounds_history.append(1)  # Start with root node only
+        self.max_reward_history.append(self.max_reward)
 
         for i in range(n_iterations):
             if self.terminated:
@@ -554,7 +556,10 @@ class MCTS:
 
             # Track number of unique compounds discovered
             self.n_unique_compounds_history.append(len(self.stat_dict))
-            
+
+            # Track best composite reward (the actual MCTS objective) so far
+            self.max_reward_history.append(self.max_reward)
+
         # Final statistics
         results = {
             'iterations_completed': i + 1 if not self.terminated else i,
@@ -592,8 +597,10 @@ class MCTS:
 
     def save_convergence_history(self, filename: str):
         """
-        Save convergence history (best E_form, E_hull, and rDOS per iteration) to CSV file.
-        Tracks three separate compounds at each iteration:
+        Save convergence history (best composite reward, E_form, E_hull, and
+        rDOS per iteration) to CSV file. 'best_reward' is max_reward - the best
+        composite reward (the actual MCTS objective) found so far at each
+        iteration. Also tracks three separate compounds at each iteration:
         1. Compound with minimum E_form (and its E_hull)
         2. Compound with minimum E_hull (and its E_form)
         3. Compound with maximum rDOS (and its E_form, E_hull)
@@ -604,6 +611,7 @@ class MCTS:
         convergence_df = pd.DataFrame({
             'iteration': list(range(len(self.best_e_form_history))),
             'n_unique_compounds': self.n_unique_compounds_history,
+            'best_reward': self.max_reward_history,
             'best_e_form': self.best_e_form_history,
             'best_e_form_e_hull': self.best_e_form_e_hull_history,
             'best_e_form_formula': self.best_e_form_formula_history,
