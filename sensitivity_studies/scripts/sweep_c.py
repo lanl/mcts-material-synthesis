@@ -4,7 +4,7 @@ Baseline value is 0.5 (the calibrated setting in config.json); also tests the
 original pre-calibration default (0.1) plus a lower and a higher bound.
 """
 
-from common import run_sweep, save_sweep_results
+from common import run_sweep, save_sweep_results, sweep_result_path
 
 SWEEP_NAME = 'c_sweep'
 
@@ -17,5 +17,5 @@ VALUES = {
 }
 
 if __name__ == '__main__':
-    df = run_sweep(SWEEP_NAME, VALUES)
+    df = run_sweep(SWEEP_NAME, VALUES, checkpoint_path=sweep_result_path(SWEEP_NAME))
     save_sweep_results(df, SWEEP_NAME)

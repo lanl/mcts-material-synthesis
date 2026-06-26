@@ -61,7 +61,7 @@ python run_mcts.py \
     --seed 42 \
     "${MP_API_KEY_ARG[@]}" \
     --rollout-depth 3 \
-    --n-rollout 1 \
+    --n-rollout 2 \
     --output "${OUTPUT_DIR}"
 
 echo ""
