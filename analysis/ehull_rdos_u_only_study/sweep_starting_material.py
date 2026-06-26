@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'sensitivity_studies' / 'scripts'))
-from common import run_sweep, save_sweep_results
+from common import run_sweep, save_sweep_results, sweep_result_path
 
 SWEEP_NAME = 'starting_material_sweep'
 
@@ -31,5 +31,5 @@ VALUES = {
 }
 
 if __name__ == '__main__':
-    df = run_sweep(SWEEP_NAME, VALUES)
+    df = run_sweep(SWEEP_NAME, VALUES, checkpoint_path=sweep_result_path(SWEEP_NAME))
     save_sweep_results(df, SWEEP_NAME)

@@ -5,18 +5,18 @@ exploration_constant/epsilon/temperature. See README.md "Child Selection
 Methods" for what each mode does.
 """
 
-from common import run_sweep, save_sweep_results
+from common import run_sweep, save_sweep_results, sweep_result_path
 
 SWEEP_NAME = 'selection_mode_sweep'
 
 VALUES = {
-    'ucb1 (calibrated)': dict(selection_mode='ucb1'),
-    'epsilon_greedy': dict(selection_mode='epsilon_greedy'),
-    'boltzmann': dict(selection_mode='boltzmann'),
-    'puct': dict(selection_mode='puct'),
-    'hybrid': dict(selection_mode='hybrid'),
+    'Ucb1 (Calibrated)': dict(selection_mode='ucb1'),
+    'Epsilon Greedy': dict(selection_mode='epsilon_greedy'),
+    'Boltzmann': dict(selection_mode='boltzmann'),
+    'Puct': dict(selection_mode='puct'),
+    'Hybrid': dict(selection_mode='hybrid'),
 }
 
 if __name__ == '__main__':
-    df = run_sweep(SWEEP_NAME, VALUES)
+    df = run_sweep(SWEEP_NAME, VALUES, checkpoint_path=sweep_result_path(SWEEP_NAME))
     save_sweep_results(df, SWEEP_NAME)
