@@ -11,9 +11,9 @@ def ehull_reward(e_hull: float) -> float:
     """
     Sharp tanh-based reward for energy above hull.
 
-    Uses f(E_hull) = -tanh(300 * (E_hull - 0.05))
+    Uses f(E_hull) = -tanh(120 * (E_hull - 0.05))
 
-    This gives a very sharp transition around 0.05 eV/atom:
+    This gives a sharp transition around 0.05 eV/atom:
     - At E_hull = 0.05: reward = 0 (boundary)
     - At E_hull = 0 (stable): reward ≈ +1 (favorable)
     - At E_hull = 0.1 (unstable): reward ≈ -1 (unfavorable)
@@ -24,7 +24,7 @@ def ehull_reward(e_hull: float) -> float:
     Returns:
         Reward value in range [-1, +1]
     """
-    return -np.tanh(300.0 * (e_hull - 0.05))
+    return -np.tanh(120.0 * (e_hull - 0.05))
 
 
 class MCTSTreeNode:
@@ -109,19 +109,26 @@ class MCTSTreeNode:
         Determine possible moves for transition metals, group IV elements, and f-block elements.
 
         For transition metals: can move up, down, left, right on periodic table
-        For group IV elements: ALL elements accessible (extended mode for better exploration)
+        For group IV elements: adjacent chain only (Si <-> Ge <-> Sn <-> Pb)
         For f-block elements: extended moves (±3) for better exploration
         """
-        self.g_iv_move = [14, 32, 50, 82]  # Si, Ge, Sn, Pb
+        g_iv_chain = [14, 32, 50, 82]  # Si, Ge, Sn, Pb, in chain order
+        self.g_iv_move = g_iv_chain
         self.f_block_move = []  # Will be set based on current f-block element
 
         for atomic_num in set(self.atoms.get_atomic_numbers()):
-            if atomic_num in self.g_iv_move:
+            if atomic_num in g_iv_chain:
                 self.g_iv = atomic_num
-                # EXTENDED MODE: Allow all Group IV elements to be reached
-                # This enables exploration of Si (highest DOS potential) from any starting point
-                # OLD: Pb→Sn→Ge→Si (3 moves), NEW: Pb→Si (1 move)
-                self.g_iv_move = [14, 32, 50, 82]  # All reachable
+                # Chain-restricted: only the current element and its immediate
+                # neighbors in the Si-Ge-Sn-Pb chain (no direct jumps, e.g.
+                # Sn->Si requires passing through Ge first)
+                idx = g_iv_chain.index(atomic_num)
+                moves = [atomic_num]
+                if idx > 0:
+                    moves.append(g_iv_chain[idx - 1])
+                if idx < len(g_iv_chain) - 1:
+                    moves.append(g_iv_chain[idx + 1])
+                self.g_iv_move = sorted(moves)
             elif 22 <= atomic_num <= 30:  # 3d transition metals
                 self.metal = atomic_num
                 if atomic_num == 22:  # Ti
@@ -307,8 +314,8 @@ class MCTSTreeNode:
             energy_calculator: Energy calculator instance (required for 'ehull'/'ehull_rdos', unused for 'rdos')
             mode: Evaluation mode. One of:
                 - 'ehull': reward = ehull_reward(e_above_hull) (MACE + Materials Project, no DFT/DOSCAR data needed)
-                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_rewards.csv)
-                - 'rdos': reward = r_DOS only, looked up from doscar_rewards.csv (no MACE/Materials Project needed)
+                - 'ehull_rdos_{beta}_{gamma}': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS (requires doscar_peaks_data_with_U.csv)
+                - 'rdos': reward = r_DOS only, computed in real time from doscar_peaks_data_with_U.csv (no MACE/Materials Project needed)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR-derived rDOS rewards
             rng: Random source to draw substitutions from (anything exposing .choice(),
                 e.g. a random.Random instance). Defaults to the shared `random` module,
@@ -379,7 +386,7 @@ class MCTSTreeNode:
                     gamma = float(parts[3]) if len(parts) > 3 else 0.0
                 except (IndexError, ValueError):
                     beta = 1.0
-                    gamma = 2.5
+                    gamma = 0.0001
 
                 doscar_reward = 0.0
                 if gamma > 0 and doscar_lookup is not None:
@@ -414,9 +421,31 @@ class MCTSTreeNode:
         
         exploitation = self.total_reward / self.t_of_visit
         exploration = self.exploration_constant * np.sqrt(np.log(self.parent.t_of_visit) / self.t_of_visit)
-        
+
         return exploitation + exploration
-        
+
+    def get_puct(self, prior: float) -> float:
+        """
+        Calculate the PUCT (Predictor + UCB applied to Trees) value for this node,
+        AlphaZero-style. Unlike get_ucb(), an unvisited node has Q=0 rather than
+        +inf - exploration is driven entirely by the (1 + N) term in the
+        denominator, which is largest when N=0.
+
+        Since this codebase has no learned policy network, `prior` is a uniform
+        prior (1 / number of siblings) rather than a predicted move probability.
+
+        Args:
+            prior: Prior probability assigned to this node (uniform, since there
+                is no policy network to predict one)
+
+        Returns:
+            PUCT value
+        """
+        q = self.total_reward / self.t_of_visit if self.t_of_visit > 0 else 0.0
+        exploration = self.exploration_constant * prior * np.sqrt(self.parent.t_of_visit) / (1 + self.t_of_visit)
+
+        return q + exploration
+
     def visit(self, renew_t_to_terminate: bool = False):
         """
         Update visit count and termination countdown.

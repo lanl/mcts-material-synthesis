@@ -33,7 +33,27 @@ class TestBuildParser:
         args = build_parser({}).parse_args([])
         assert args.rollout_method == 'ehull'
         assert args.beta == 1.0
-        assert args.gamma == 2.5
+        assert args.gamma == 0.0001
+
+    def test_default_selection_mode_is_ucb1(self):
+        args = build_parser({}).parse_args([])
+        assert args.selection_mode == 'ucb1'
+        assert args.epsilon == 0.2
+        assert args.temperature == 1.0
+
+    def test_selection_mode_choices(self):
+        parser = build_parser({})
+        action = next(a for a in parser._actions if a.dest == 'selection_mode')
+        assert action.choices == ['ucb1', 'epsilon_greedy', 'boltzmann', 'puct', 'hybrid']
+
+    def test_config_overrides_selection_mode_default(self):
+        args = build_parser({'selection_mode': 'boltzmann', 'temperature': 0.5}).parse_args([])
+        assert args.selection_mode == 'boltzmann'
+        assert args.temperature == 0.5
+
+    def test_cli_flag_overrides_config_selection_mode(self):
+        args = build_parser({'selection_mode': 'boltzmann'}).parse_args(['--selection-mode', 'puct'])
+        assert args.selection_mode == 'puct'
 
     def test_invalid_rollout_method_rejected(self):
         with pytest.raises(SystemExit):

@@ -19,10 +19,12 @@ Examples:
     python run_mcts.py --iterations 100                   # 100 iterations
     python run_mcts.py --structure my_structure.cif        # Custom structure
     python run_mcts.py --rollout-method ehull --mp-api-key YOUR_KEY       # E_hull only (MACE + Materials Project, no DFT/DOSCAR data needed)
-    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_rewards.csv)
-    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_rewards.csv, no MACE/MP needed)
+    python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001 --mp-api-key YOUR_KEY  # E_hull + rDOS (requires doscar_peaks_data_with_U.csv)
+    python run_mcts.py --rollout-method rdos               # rDOS only (requires doscar_peaks_data_with_U.csv, no MACE/MP needed)
     python run_mcts.py --f-block-mode lanthanides_u_extended  # Lanthanides + U, extended moves
     python run_mcts.py --exploration-constant 0.2          # Higher exploration (default: 0.1)
+    python run_mcts.py --selection-mode boltzmann --temperature 0.5  # Softmax exploration instead of classic UCB1
+    python run_mcts.py --selection-mode epsilon_greedy --epsilon 0.2  # argmax UCB1, uniform-random epsilon fraction of the time
     python run_mcts.py --no-labels                         # Turn off labels on radial tree visualization
     python run_mcts.py --iterations 200 --structure my_structure.cif --rollout-method ehull
 """
@@ -142,17 +144,28 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
     parser.add_argument('--rollout-method', type=str, default='ehull',
                        choices=['ehull', 'ehull_rdos', 'rdos'],
                        help='Rollout method: ehull (tanh-transformed energy above hull only; MACE + Materials Project, no DFT/DOSCAR data needed), '
-                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_rewards.csv), '
-                            'or rdos (rDOS only, looked up from doscar_rewards.csv; no MACE/Materials Project needed). '
+                            'ehull_rdos (ehull + rDOS, weighted by --beta/--gamma; requires doscar_peaks_data_with_U.csv), '
+                            'or rdos (rDOS only, computed in real time from doscar_peaks_data_with_U.csv; no MACE/Materials Project needed). '
                             'Reward: ehull -> ehull_reward(e_above_hull); ehull_rdos -> beta*ehull_reward(e_above_hull) + gamma*r_DOS; rdos -> r_DOS')
     parser.add_argument('--beta', type=float, default=1.0,
                        help='Weight for the E_hull reward when using ehull_rdos (default: 1.0)')
-    parser.add_argument('--gamma', type=float, default=2.5,
-                       help='Weight for the rDOS reward when using ehull_rdos (default: 2.5)')
+    parser.add_argument('--gamma', type=float, default=0.0001,
+                       help='Weight for the rDOS reward when using ehull_rdos (default: 0.0001)')
     parser.add_argument('--termination-limit', type=int, default=60,
                        help='Number of visits before terminating a node without improvement (default: 60)')
+    parser.add_argument('--selection-mode', type=str, default='ucb1',
+                       choices=['ucb1', 'epsilon_greedy', 'boltzmann', 'puct', 'hybrid'],
+                       help='Child-selection strategy for the MCTS selection phase: '
+                            'ucb1 (default; classic UCB1, deterministic argmax of Q/N + c*sqrt(ln(N_parent)/N)), '
+                            'epsilon_greedy (argmax UCB1, but pick uniformly at random with probability --epsilon), '
+                            'boltzmann (stochastic; P(child) proportional to exp(UCB1 / --temperature)), '
+                            'puct (AlphaZero-style Q + c*prior*sqrt(N_parent)/(1+N) with a uniform prior, since there is no learned policy network), '
+                            'hybrid (this codebase\'s original default before --selection-mode existed: epsilon-greedy outer loop, '
+                            'but the exploratory draw is weighted by UCB1-squared rather than uniform).')
     parser.add_argument('--epsilon', '-e', type=float, default=0.2,
-                       help='Exploration rate for epsilon-greedy selection (default: 0.2, range: 0.0-1.0)')
+                       help='Exploration rate for epsilon_greedy/hybrid selection modes (default: 0.2, range: 0.0-1.0). Unused by ucb1/boltzmann/puct.')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                       help='Temperature for the boltzmann selection mode (default: 1.0). Higher = more uniform/exploratory, lower = closer to greedy argmax. Unused by other selection modes.')
     parser.add_argument('--rollout-depth', type=int, default=1,
                        help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
     parser.add_argument('--n-rollout', type=int, default=5,
@@ -203,14 +216,14 @@ def main():
         logger.info(f"   Then run with: --mp-api-key YOUR_KEY, or set \"mp_api_key\" in config.json")
         return 1
 
-    # Check if DOSCAR rewards file exists for methods that need rDOS
+    # Check if DOSCAR peaks file exists for methods that need rDOS (rewards are
+    # always computed in real time from raw peak data - no precomputed cache)
     if args.rollout_method in ['ehull_rdos', 'rdos']:
-        doscar_file = Path("doscar_rewards.csv")
-        if not doscar_file.exists():
-            logger.error(f"DOSCAR rewards file (doscar_rewards.csv) not found for rollout method '{args.rollout_method}'")
-            logger.info(f"   This file is derived from local DFT/DOSCAR data and is not bundled with the repo")
-            logger.info(f"   pre-release. See the README's Data Availability section for the expected schema")
-            logger.info(f"   and how to generate it from your own DOSCAR data.")
+        peaks_file = Path("doscar_peaks_data_with_U.csv")
+        if not peaks_file.exists():
+            logger.error(f"DOSCAR peaks file (doscar_peaks_data_with_U.csv) not found for rollout method {args.rollout_method}")
+            logger.info(f"   Provide doscar_peaks_data_with_U.csv (raw peaks) in the repo root")
+            logger.info(f"   See the README's Data Availability section for the expected schema.")
             return 1
 
     logger.info("=" * 80)
@@ -287,14 +300,18 @@ def main():
         root_node.e_form = root_e_form
         root_node.e_above_hull = root_e_hull
 
-        mcts = MCTS(root_node, epsilon=args.epsilon)
+        mcts = MCTS(root_node, epsilon=args.epsilon, temperature=args.temperature)
 
         logger.info(f"   Root compound: {root_node.get_chemical_formula()}")
         logger.info(f"   Root E_form: {root_e_form:.4f} eV/atom")
         logger.info(f"   Root E_hull: {root_e_hull:.4f} eV/atom")
         logger.info(f"   F-block mode: {args.f_block_mode}")
         logger.info(f"   Exploration constant: {args.exploration_constant}")
-        logger.info(f"   Epsilon (exploration rate): {args.epsilon}")
+        logger.info(f"   Selection mode: {args.selection_mode}")
+        if args.selection_mode in ('epsilon_greedy', 'hybrid'):
+            logger.info(f"   Epsilon (exploration rate): {args.epsilon}")
+        if args.selection_mode == 'boltzmann':
+            logger.info(f"   Temperature: {args.temperature}")
         logger.info(f"   Termination limit: {args.termination_limit}")
 
         # Show search space
@@ -320,7 +337,7 @@ def main():
     logger.info(f"   Number of rollouts: {args.n_rollout}")
     logger.info(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
-        logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(300*(E_hull-0.05))): {args.beta}")
+        logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(120*(E_hull-0.05))): {args.beta}")
         logger.info(f"   Gamma (rDOS weight): {args.gamma}")
     logger.info(f"   This may take several minutes depending on cache hit rate...")
 
@@ -330,7 +347,7 @@ def main():
             energy_calculator=energy_calc,
             rollout_depth=args.rollout_depth,
             n_rollout=args.n_rollout,
-            selection_mode='epsilon',
+            selection_mode=args.selection_mode,
             rollout_method=args.rollout_method,
             beta=args.beta,
             gamma=args.gamma,
@@ -378,63 +395,11 @@ def main():
         # Create visualizations
         visualizer = TreeVisualizer()
 
-        # Radial tree visualization
-        visualizer.plot_radial_tree_visualization(
-            mcts,
-            output_dir=str(output_dir),
-            csv_file=str(csv_file),
-            show_labels=not args.no_labels
-        )
+        # Radial tree visualization generation disabled (use composite radial tree instead)
 
-        # Energy distribution plot
-        visualizer.plot_energy_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Iteration progress plot
-        visualizer.plot_iteration_progress(
-            mcts,
-            save_path=output_dir / "iteration_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull distribution plot
-        visualizer.plot_energy_above_hull_distribution(
-            mcts.stat_dict,
-            top_n=15,
-            save_path=output_dir / "energy_above_hull_distribution.png",
-            csv_file=str(csv_file)
-        )
-
-        # Energy above hull iteration progress plot
-        visualizer.plot_energy_above_hull_progress(
-            mcts,
-            save_path=output_dir / "energy_above_hull_progress.png",
-            csv_file=str(csv_file)
-        )
-
-        # Formation energy by elements plot
-        visualizer.plot_formation_energy_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "formation_energy_by_elements.png"
-        )
-
-        # Energy above hull by elements plot
-        visualizer.plot_energy_above_hull_by_elements(
-            mcts.stat_dict,
-            csv_file=str(csv_file),
-            save_path=output_dir / "energy_above_hull_by_elements.png"
-        )
-
-        # Generate reports
-        analyzer.create_summary_report(
-            mcts,
-            save_path=output_dir / "mcts_report.txt"
-        )
+        # Skipping some auxiliary visualizations per publication configuration
+        # (energy_distribution, iteration_progress, energy_above_hull_*, formation_energy_by_elements)
+        # Only essential visualizations are generated to avoid duplicate/unused figures.
 
         # Export data
         analyzer.export_results(
@@ -486,7 +451,6 @@ def main():
     logger.info(f"   - energy_above_hull_progress.png - Energy above hull search progress")
     logger.info(f"   - formation_energy_by_elements.png - Formation energy by transition metal/Group IV")
     logger.info(f"   - energy_above_hull_by_elements.png - Energy above hull by transition metal/Group IV")
-    logger.info(f"   - mcts_report.txt - Detailed text report")
     logger.info(f"   - all_compounds.csv - All discovered compounds data")
 
     logger.info(f"\nTo run again:")
@@ -494,7 +458,7 @@ def main():
     logger.info(f"   python run_mcts.py --iterations 1000  # Longer search")
     logger.info(f"   python run_mcts.py --structure my_file.cif  # Different starting material")
     logger.info(f"   python run_mcts.py --f-block-mode lanthanides_u_extended  # Fast exploration of heavy lanthanides")
-    logger.info(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 2.5  # E_hull + rDOS")
+    logger.info(f"   python run_mcts.py --rollout-method ehull_rdos --beta 1.0 --gamma 0.0001  # E_hull + rDOS")
     logger.info(f"   python run_mcts.py -c 0.2  # Higher exploration constant")
 
     logger.info("=" * 80)
