@@ -549,6 +549,20 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
 
     synth_sets = [elem_set(n) for n in synthesized_names]
 
+    # attempted-but-possibly-unsuccessful compounds - see compounds_filtered.dat
+    # (same experimental-attempts file used for the Successful/Unsuccessful
+    # Synthesis overlay in plot_ehull_vs_rdos). Anything not in this list was
+    # never attempted, so the table should show '-' rather than 'No'.
+    attempted_path = out_dir / 'compounds_filtered.dat'
+    attempted_sets = []
+    if attempted_path.exists():
+        try:
+            df_exp = pd.read_csv(attempted_path, sep=r"\s+", comment='#', header=None,
+                                names=['name', 'e_form', 'e_hull'])
+            attempted_sets = [elem_set(n) for n in df_exp['name']]
+        except Exception:
+            attempted_sets = []
+
     rows = []
     for rank, (_, r) in enumerate(top15.iterrows(), start=1):
         name = r.get('name', r.get('formula', ''))
@@ -557,9 +571,16 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
         comp = float(r.get('composite_score', 0.0)) if pd.notna(r.get('composite_score', None)) else 0.0
         ehull = float(r.get('e_above_hull', np.nan)) if pd.notna(r.get('e_above_hull', None)) else np.nan
         is_synth = any(elem_set(name) == s for s in synth_sets)
+        is_attempted = any(elem_set(name) == s for s in attempted_sets)
+        if is_synth:
+            synth_status = 'Yes'
+        elif is_attempted:
+            synth_status = 'No'
+        else:
+            synth_status = '-'
         display_name = format_name_u_tm_giv(name)
         global_rank = global_ranks.get(_formula_key(name))
-        rows.append((rank, global_rank, display_name, rdos, ehull_r, comp, ehull, 'Yes' if is_synth else 'No'))
+        rows.append((rank, global_rank, display_name, rdos, ehull_r, comp, ehull, synth_status))
 
     eol = ' \\\\\n'  # LaTeX row terminator (literal "\\") followed by a real newline
     tex_path = tables_dir / 'top15_u_only.tex'
