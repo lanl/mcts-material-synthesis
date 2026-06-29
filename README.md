@@ -282,7 +282,8 @@ mcts_materials/
 ├── examples/
 │   └── mat_Pb6U1W6_sg191.cif      # Default starting structure
 ├── analysis/
-│   └── ehull_rdos_u_only_study/   # Scripts to reproduce the published U-only ehull_rdos study and figures
+│   ├── ehull_rdos_u_only_study/             # Scripts to reproduce the published U-only ehull_rdos study and figures
+│   └── ehull_rdos_u_only_study_normalized/  # Same study, gamma normalized to 1/(max raw r_DOS) instead of the calibrated 0.0001
 ├── sensitivity_studies/           # Replicate-run hyperparameter sensitivity sweeps (see Sensitivity Studies)
 │   ├── scripts/                   # Generation scripts (run_all.sh reproduces everything)
 │   └── results/                   # Per-sweep convergence_data.csv + figures
@@ -299,6 +300,8 @@ mcts_materials/
 - `sweep_starting_material.py`: replicate-run sweep (5 seeds each) across starting materials at increasing move-graph distance from the global-best compound, feeding `convergence_by_starting_material.png`
 
 This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
+
+`analysis/ehull_rdos_u_only_study_normalized/` is the same study with gamma fixed to `1 / (max raw r_DOS across the 108 U-only compounds)` = `1/2516.1664410449775` ≈ `0.0003974`, instead of the calibrated `0.0001` - this normalizes the `gamma*r_DOS` term to top out at 1.0, the same scale as `ehull_reward`'s ~[-1,1] range. Unlike the calibrated study, gamma here is hardcoded in `generate_figures.py`/`create_composite_radial_tree.py` and passed explicitly via `--gamma` in `run_study.sh` rather than read from `config.json` (which stays at the calibrated 0.0001). It has no `convergence_by_starting_material.png`/`sweep_starting_material.py`, since that figure's source sweep (`sensitivity_studies/results/starting_material_sweep/`) is calibrated-gamma-only.
 
 ## Sensitivity Studies
 
