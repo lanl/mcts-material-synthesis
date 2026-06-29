@@ -25,9 +25,12 @@ mcts_results/
 # Local experimental compounds list (do not commit)
 analysis/ehull_rdos_u_only_study/compounds_filtered.dat
 analysis/ehull_rdos_u_only_study/**/*.csv
+analysis/ehull_rdos_u_only_study_normalized/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study_normalized/**/*.csv
 # Supplementary-run outputs and sidecar files (regenerate via run_mcts.py + generate_figures.py)
 analysis/ehull_rdos_u_only_study/d5_start_run/
 analysis/ehull_rdos_u_only_study/farthest_start_run/
+analysis/ehull_rdos_u_only_study_normalized/d5_start_run/
 # Sensitivity-sweep raw data/checkpoints (regenerate via sensitivity_studies/scripts/run_all.sh) -
 # the .png figures generated from these ARE committed, so this excludes by
 # extension rather than ignoring the whole results/ directory (a directory-
