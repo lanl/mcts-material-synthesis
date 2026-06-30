@@ -809,7 +809,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
 
 def main():
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parents[2]
+    repo_root = script_dir.parents[1]
     out_dir = script_dir
 
     # Ensure a subsidiary figures directory exists; we'll move all generated PNGs here
