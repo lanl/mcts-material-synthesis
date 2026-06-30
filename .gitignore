@@ -22,13 +22,15 @@ high_throughput_mace_results.full.csv
 # MCTS run outputs (regenerate locally with run_mcts.py)
 mcts_results/
 *.pkl
-# Local experimental compounds list (do not commit)
-analysis/ehull_rdos_u_only_study/compounds_filtered.dat
+# Per-run generated CSVs and stale local data copies (regenerate via generate_figures.py / run_mcts.py)
+# compounds_filtered.dat lives at analysis/compounds_filtered.dat (tracked); per-study
+# copies are obsolete but caught here in case any tool creates them
 analysis/ehull_rdos_u_only_study/**/*.csv
-analysis/ehull_rdos_u_only_study_normalized/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study/**/compounds_filtered.dat
 analysis/ehull_rdos_u_only_study_normalized/**/*.csv
-analysis/ehull_rdos_u_only_study_mean_rollout/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study_normalized/**/compounds_filtered.dat
 analysis/ehull_rdos_u_only_study_mean_rollout/**/*.csv
+analysis/ehull_rdos_u_only_study_mean_rollout/**/compounds_filtered.dat
 # Supplementary-run outputs and sidecar files (regenerate via run_mcts.py + generate_figures.py)
 analysis/ehull_rdos_u_only_study/d5_start_run/
 analysis/ehull_rdos_u_only_study/farthest_start_run/
