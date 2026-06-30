@@ -185,6 +185,9 @@ The Materials Project API is used to calculate **energy above hull**, which meas
 
 - `--rollout-depth`: 1 (depth of random substitutions during rollout)
 - `--n-rollout`: 5 (number of rollout simulations per expansion)
+- `--rollout-aggregation`: `max` (how the `--n-rollout` reward samples are combined into a node's reward)
+  - `max` (default): take the best of the samples - optimistic, biased upward by however many samples are drawn (a node sampled more times looks better on average even with no real difference in quality). The `n_rollout - 1` extra (depth > 0) samples are discounted by `0.9 ** rollout_depth` before the comparison, since a speculative sample wandered further from the node is less informative about the node's own quality.
+  - `mean`: plain average across the samples - an unbiased estimate of the node's expected reward, at the cost of being more pessimistic about a node whose extra speculative samples happened to land on worse compositions. The extra samples are **not** discounted here: multiplying them by `0.9 ** rollout_depth` and then averaging with an unweighted `n` would just drag the mean toward zero by an amount that grows with `n_rollout`/`rollout_depth`, which isn't a meaningful confidence weighting (zero isn't a neutral reward in this scheme) - so `mean` uses the raw, undiscounted samples instead.
 
 See [Child Selection Methods](#child-selection-methods) for `--selection-mode`, `--epsilon`, and `--temperature`.
 
@@ -282,8 +285,9 @@ mcts_materials/
 ├── examples/
 │   └── mat_Pb6U1W6_sg191.cif      # Default starting structure
 ├── analysis/
-│   ├── ehull_rdos_u_only_study/             # Scripts to reproduce the published U-only ehull_rdos study and figures
-│   └── ehull_rdos_u_only_study_normalized/  # Same study, gamma normalized to 1/(max raw r_DOS) instead of the calibrated 0.0001
+│   ├── ehull_rdos_u_only_study/              # Scripts to reproduce the published U-only ehull_rdos study and figures
+│   ├── ehull_rdos_u_only_study_normalized/   # Same study, gamma normalized to 1/(max raw r_DOS) instead of the calibrated 0.0001
+│   └── ehull_rdos_u_only_study_mean_rollout/ # Same study, --rollout-aggregation mean instead of the default max
 ├── sensitivity_studies/           # Replicate-run hyperparameter sensitivity sweeps (see Sensitivity Studies)
 │   ├── scripts/                   # Generation scripts (run_all.sh reproduces everything)
 │   └── results/                   # Per-sweep convergence_data.csv + figures
@@ -301,7 +305,9 @@ mcts_materials/
 
 This requires `high_throughput_mace_results.full.csv` and `doscar_peaks_data_with_U.csv` locally (see [Data Availability](#data-availability)), and a Materials Project API key via `config.json` or `MP_API_KEY`.
 
-`analysis/ehull_rdos_u_only_study_normalized/` is the same study with gamma fixed to `1 / (max raw r_DOS across the 108 U-only compounds)` = `1/2516.1664410449775` ≈ `0.0003974`, instead of the calibrated `0.0001` - this normalizes the `gamma*r_DOS` term to top out at 1.0, the same scale as `ehull_reward`'s ~[-1,1] range. Unlike the calibrated study, gamma here is hardcoded in `generate_figures.py`/`create_composite_radial_tree.py` and passed explicitly via `--gamma` in `run_study.sh` rather than read from `config.json` (which stays at the calibrated 0.0001). It has no `convergence_by_starting_material.png`/`sweep_starting_material.py`, since that figure's source sweep (`sensitivity_studies/results/starting_material_sweep/`) is calibrated-gamma-only.
+`analysis/ehull_rdos_u_only_study_normalized/` is the same study with gamma fixed to `1 / (max raw r_DOS across the 108 U-only compounds)` = `1/2516.1664410449775` ≈ `0.0003974`, instead of the calibrated `0.0001` - this normalizes the `gamma*r_DOS` term to top out at 1.0, the same scale as `ehull_reward`'s ~[-1,1] range. Unlike the calibrated study, gamma here is hardcoded in `generate_figures.py`/`create_composite_radial_tree.py` and passed explicitly via `--gamma` in `run_study.sh` rather than read from `config.json` (which stays at the calibrated 0.0001). It has its own `sweep_starting_material.py`/`convergence_by_starting_material.png` (`starting_material_sweep_normalized/`), since the calibrated study's sweep uses gamma=0.0001 and the normalized gamma also shifts which compound is the true global-best target (UTi6Sn6 here vs. UZr6Pb6 for the calibrated study), so the starting-material ladder had to be rechosen to land on clean edit distances to the new target.
+
+`analysis/ehull_rdos_u_only_study_mean_rollout/` is the same study (calibrated gamma=0.0001 unchanged) with `--rollout-aggregation mean` instead of the default `max` (see [Hyperparameters](#hyperparameters) below) - a node's reward is the plain average of its rollout samples rather than the optimistic max, and the depth discount is dropped for the extra samples (see `mcts_crystal/mcts.py`'s `_run_rollout_samples`). It also has its own `sweep_starting_material.py`/`convergence_by_starting_material.png` (`starting_material_sweep_mean_rollout/`, same starting-material ladder as the calibrated study since gamma - and therefore the global-best target - is unchanged here, only `rollout_aggregation='mean'` is added to each replicate).
 
 ## Sensitivity Studies
 

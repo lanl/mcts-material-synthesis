@@ -175,7 +175,8 @@ class MCTS:
             
     def _run_rollout_samples(self, new_node: MCTSTreeNode, rollout_depth: int,
                               n_rollout: int, energy_calculator, mode: str,
-                              doscar_lookup, n_workers: int) -> List[float]:
+                              doscar_lookup, n_workers: int,
+                              rollout_aggregation: str = 'max') -> List[float]:
         """
         Evaluate n_rollout independent rollout samples for new_node and return
         their (scaled) rewards. The first sample always uses depth=0 (evaluates
@@ -185,6 +186,15 @@ class MCTS:
         rollout_depth steps; when n_workers > 1 they are evaluated concurrently
         via a thread pool, each with its own deterministically-seeded RNG so
         results stay reproducible under --seed regardless of thread scheduling.
+
+        The depth-dependent discount (0.9 ** rollout_depth) applied to those
+        extra samples only makes sense under 'max' aggregation, where it acts
+        as a confidence penalty on a speculative sample before comparing it
+        against the node's own real (depth=0) reward. Under 'mean' aggregation
+        the same multiply-then-average-with-unweighted-n approach would just
+        drag the average toward zero by an amount that grows with n_rollout
+        and rollout_depth, which isn't a meaningful confidence weighting - so
+        for 'mean' the extra samples are left undiscounted (scale=1.0).
 
         Args:
             new_node: Node to roll out from
@@ -196,6 +206,8 @@ class MCTS:
             n_workers: Number of worker threads to use for the extra samples
                 (n_workers <= 1 runs them sequentially with the shared global
                 random state, identical to the pre-parallelism behavior)
+            rollout_aggregation: 'max' (default) applies the 0.9**rollout_depth
+                discount to the extra samples; 'mean' leaves them undiscounted
 
         Returns:
             List of reward values, one per rollout sample
@@ -207,7 +219,7 @@ class MCTS:
         if n_extra <= 0:
             return rewards
 
-        scale = 0.9 ** rollout_depth
+        scale = 0.9 ** rollout_depth if rollout_aggregation == 'max' else 1.0
 
         if n_workers <= 1:
             for _ in range(n_extra):
@@ -244,7 +256,8 @@ class MCTS:
     def expansion_simulation(self, rollout_depth: int = 1, n_rollout: int = 1,
                            energy_calculator=None, rollout_method: str = 'ehull',
                            beta: float = 1.0, gamma: float = 0.0001,
-                           doscar_lookup=None, n_workers: int = 1) -> Tuple[float, bool]:
+                           doscar_lookup=None, n_workers: int = 1,
+                           rollout_aggregation: str = 'max') -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
 
@@ -258,6 +271,13 @@ class MCTS:
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
             n_workers: Number of worker threads for the n_rollout samples
                 (default: 1, i.e. sequential, identical to prior behavior)
+            rollout_aggregation: How to combine the n_rollout reward samples into
+                this node's reward - 'max' (default, original behavior: optimistic,
+                biased upward by however many samples are drawn, with the extra
+                samples discounted by 0.9**rollout_depth before comparison) or
+                'mean' (plain average of undiscounted samples - an unbiased
+                estimate of the node's expected reward; see _run_rollout_samples
+                for why the discount is dropped here rather than reused)
 
         Returns:
             Tuple of (reward, renew_t_to_terminate_flag)
@@ -305,10 +325,15 @@ class MCTS:
 
         rewards = self._run_rollout_samples(
             new_node, rollout_depth, n_rollout, energy_calculator, mode,
-            doscar_lookup, n_workers
+            doscar_lookup, n_workers, rollout_aggregation
         )
-            
-        reward = np.max(rewards)
+
+        if rollout_aggregation == 'max':
+            reward = np.max(rewards)
+        elif rollout_aggregation == 'mean':
+            reward = np.mean(rewards)
+        else:
+            raise ValueError(f"Unknown rollout_aggregation: {rollout_aggregation}")
         extra = 0
         
         # Check for new maximum reward
@@ -426,7 +451,8 @@ class MCTS:
             rollout_depth: int = 1, n_rollout: int = 10,
             selection_mode: str = 'ucb1', rollout_method: str = 'ehull',
             beta: float = 1.0, gamma: float = 0.0001,
-            doscar_lookup=None, n_workers: int = 1) -> Dict:
+            doscar_lookup=None, n_workers: int = 1,
+            rollout_aggregation: str = 'max') -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
 
@@ -442,6 +468,8 @@ class MCTS:
             beta: Weight for E_hull reward when using 'ehull_rdos' method (default: 1.0)
             gamma: Weight for rDOS reward when using 'ehull_rdos' method (default: 0.0001)
             doscar_lookup: DoscarRewardLookup instance for DOSCAR rewards
+            rollout_aggregation: How to combine a node's n_rollout reward samples -
+                'max' (default) or 'mean'. See expansion_simulation() for details.
                   'ehull':      reward = ehull_reward(e_above_hull)
                   'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
                   'rdos':       reward = r_DOS
@@ -507,7 +535,8 @@ class MCTS:
                 beta=beta,
                 gamma=gamma,
                 doscar_lookup=doscar_lookup,
-                n_workers=n_workers
+                n_workers=n_workers,
+                rollout_aggregation=rollout_aggregation
             )
 
             # Back-propagation

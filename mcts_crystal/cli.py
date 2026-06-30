@@ -170,6 +170,16 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
     parser.add_argument('--n-rollout', type=int, default=5,
                        help='Number of rollout simulations per expansion (default: 5). Higher values increase computation per iteration.')
+    parser.add_argument('--rollout-aggregation', type=str, default='max',
+                       choices=['max', 'mean'],
+                       help="How to combine a node's --n-rollout reward samples into its reward: "
+                            "max (default; optimistic, biased upward by however many samples are drawn - "
+                            "the original behavior; the n_rollout-1 extra samples are discounted by "
+                            "0.9**rollout_depth before comparison) or mean (plain average across "
+                            "UNDISCOUNTED samples, an unbiased estimate of the node's expected reward - "
+                            "the depth discount is dropped here since discounting-then-averaging-by-"
+                            "unweighted-n would just drag the mean toward zero rather than reflect "
+                            "lower confidence in farther samples).")
     parser.add_argument('--n-workers', type=int, default=1,
                        help='Number of worker threads to evaluate each expansion\'s rollout simulations concurrently (default: 1, i.e. sequential). Useful for ehull/ehull_rdos, where each rollout is an independent MACE relaxation + Materials Project call. For a fixed --n-workers value, --seed still reproduces identical results run-to-run (results will differ from a different --n-workers value at the same seed, since the RNG is consumed differently).')
     parser.add_argument('--seed', type=int, default=None,
@@ -335,6 +345,7 @@ def main():
     logger.info(f"   Rollout method: {args.rollout_method}")
     logger.info(f"   Rollout depth: {args.rollout_depth}")
     logger.info(f"   Number of rollouts: {args.n_rollout}")
+    logger.info(f"   Rollout aggregation: {args.rollout_aggregation}")
     logger.info(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
         logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(120*(E_hull-0.05))): {args.beta}")
@@ -352,7 +363,8 @@ def main():
             beta=args.beta,
             gamma=args.gamma,
             doscar_lookup=doscar_lookup,
-            n_workers=args.n_workers
+            n_workers=args.n_workers,
+            rollout_aggregation=args.rollout_aggregation
         )
 
         logger.info(f"   Completed: {results['iterations_completed']} iterations")

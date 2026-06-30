@@ -1,4 +1,15 @@
 #!/bin/bash
+# Mean-rollout-aggregation variant of analysis/ehull_rdos_u_only_study/: same
+# study, same starting material/gamma/hyperparameters, but
+# --rollout-aggregation mean instead of the default 'max'. Under 'mean', a
+# node's reward is the plain average of its n_rollout samples (an unbiased
+# estimate of the node's expected reward) rather than the max (optimistic,
+# biased upward by however many samples are drawn). The depth discount
+# (0.9**rollout_depth) that 'max' applies to the n_rollout-1 extra samples is
+# also dropped here - discounting then averaging with an unweighted n would
+# just drag the mean toward zero rather than reflect lower confidence in
+# farther samples (see mcts_crystal/mcts.py's _run_rollout_samples).
+#
 # Reproduce the U-only ehull_rdos study: sharp tanh E_hull + DOSCAR reward
 # Reward = beta*ehull_reward(E_hull) + gamma*r_DOS, where ehull_reward = -tanh(120*(E_hull-0.05))
 # beta/gamma default to 1.0/0.0001 (see config.json/config.example.json - gamma is a single
@@ -17,10 +28,10 @@
 #     or the MP_API_KEY environment variable below
 #
 # See config.example.json in this directory for the exact effective settings
-# this study used (transition_metal/group_iv/gamma/selection_mode/exploration_constant/
-# iterations - mp_api_key is a placeholder, never a real key). It documents
-# the repo-root config.json this study was run against; it is not itself read
-# by any script here.
+# this study used, including rollout_aggregation=mean (mp_api_key is a
+# placeholder, never a real key). It documents the repo-root config.json this
+# study was run against (plus the --rollout-aggregation override below); it
+# is not itself read by any script here.
 #
 # selection_mode, exploration_constant, iterations, transition_metal, group_iv
 # are NOT hardcoded as CLI flags here - they come from config.json so there is
@@ -42,9 +53,10 @@ OUTPUT_DIR="${STUDY_DIR}"
 F_BLOCK_MODE="u_only"
 
 echo "=================================================="
-echo "EHULL + RDOS STUDY (U-only)"
+echo "EHULL + RDOS STUDY (U-only, mean rollout aggregation)"
 echo "Reward = beta*ehull_reward(E_hull) + gamma*r_DOS"
 echo "where ehull_reward = -tanh(120 * (E_hull - 0.05))"
+echo "Rollout aggregation: mean (undiscounted), not the default max"
 echo "=================================================="
 
 MP_API_KEY_ARG=()
@@ -68,6 +80,7 @@ python run_mcts.py \
     "${MP_API_KEY_ARG[@]}" \
     --rollout-depth 3 \
     --n-rollout 2 \
+    --rollout-aggregation mean \
     --output "${OUTPUT_DIR}"
 
 echo ""
