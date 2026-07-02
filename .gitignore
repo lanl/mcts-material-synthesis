@@ -29,11 +29,17 @@ analysis/ehull_rdos_u_only_study_normalized/compounds_filtered.dat
 analysis/ehull_rdos_u_only_study_normalized/**/*.csv
 analysis/ehull_rdos_u_only_study_mean_rollout/compounds_filtered.dat
 analysis/ehull_rdos_u_only_study_mean_rollout/**/*.csv
+analysis/ehull_rdos_u_only_study_final/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study_final/**/*.csv
+analysis/ehull_rdos_u_only_study_max_undiscounted/compounds_filtered.dat
+analysis/ehull_rdos_u_only_study_max_undiscounted/**/*.csv
 # Supplementary-run outputs and sidecar files (regenerate via run_mcts.py + generate_figures.py)
 analysis/ehull_rdos_u_only_study/d5_start_run/
 analysis/ehull_rdos_u_only_study/farthest_start_run/
 analysis/ehull_rdos_u_only_study_normalized/d5_start_run/
 analysis/ehull_rdos_u_only_study_mean_rollout/d5_start_run/
+analysis/ehull_rdos_u_only_study_final/d5_start_run/
+analysis/ehull_rdos_u_only_study_max_undiscounted/d5_start_run/
 # Sensitivity-sweep raw data/checkpoints (regenerate via sensitivity_studies/scripts/run_all.sh) -
 # the .png figures generated from these ARE committed, so this excludes by
 # extension rather than ignoring the whole results/ directory (a directory-

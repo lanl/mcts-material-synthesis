@@ -2,14 +2,26 @@
 """
 Generate publication figures as PNGs directly from MCTS outputs and high-throughput data.
 
+Final-parameter study combining:
+  - gamma = 1/(max raw r_DOS across the 108 U-only compounds) = 1/2516.1664410449775
+    (normalizes gamma*r_DOS to top out at 1.0, same scale as ehull_reward's ~[-1,1] range;
+    see NORMALIZED_GAMMA below - NOT read from config.json)
+  - rollout_aggregation = mean (unbiased average of undiscounted rollout samples,
+    rather than the optimistic max-with-decay used in the calibrated study)
+
+See analysis/ehull_rdos_u_only_study_normalized/ (gamma only) and
+analysis/ehull_rdos_u_only_study_mean_rollout/ (mean aggregation only) for
+the individual-parameter variants.
+
 This script replaces the prior gnuplot/prepare pipeline and writes PNG files:
 - ehull_vs_rdos.png
-- convergence_by_starting_material.png (reuses sensitivity_studies' starting_material_sweep data)
+- convergence_by_starting_material.png (reuses sweep_starting_material.py's own
+  starting_material_sweep_final data here)
 - radial_tree_composite.png (delegates to create_composite_radial_tree.py)
 
-It expects to be run from `analysis/ehull_rdos_u_only_study/` where the MCTS
-run outputs (`all_compounds.csv`, `convergence_history.csv`, `mcts_object.pkl`) are
-present (the example `run_study.sh` places them there). It also expects the
+It expects to be run from this directory where the MCTS run outputs
+(`all_compounds.csv`, `convergence_history.csv`, `mcts_object.pkl`) are present
+(the included `run_study.sh` places them there). It also expects the
 high-throughput cache `high_throughput_mace_results.full.csv` and
 `doscar_peaks_data_with_U.csv` to be available at the repository root for the
 `ehull_vs_rdos` figure if the analysis CSV is not present (rDOS is always
@@ -35,29 +47,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from synthesized_compounds import SYNTHESIZED_COMPOUNDS
 from create_composite_radial_tree import F_BLOCK, TRANSITION_METALS, GROUP_IV
 
-DEFAULT_GAMMA = 0.0001
+# 1 / (max raw r_DOS across the 108 U-only compounds, U-Pb-Mn / Mn6Pb6U =
+# 2516.1664410449775) - normalizes gamma*r_DOS to top out at 1.0, the same
+# scale as ehull_reward's ~[-1,1] range. Deliberately NOT read from
+# config.json: that file is shared with the calibrated (gamma=0.0001) study
+# and must stay there.
+NORMALIZED_GAMMA = 1.0 / 2516.1664410449775
+DEFAULT_GAMMA = NORMALIZED_GAMMA
 
 
 def load_gamma(default: float = DEFAULT_GAMMA) -> float:
-    """Load the single gamma (rDOS weight) from config.json, if present.
-
-    gamma is used both as the composite-score weight (beta*ehull_reward + gamma*r_DOS)
-    and to scale r_DOS for plot overlays - there is only one gamma value, not a
-    separate "gamma_prefactor" for plots.
-    """
-    config_path = Path(__file__).resolve().parents[2] / 'config.json'
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-            rollout_method = config.get('rollout_method')
-            if rollout_method is not None and not str(rollout_method).startswith('ehull_rdos'):
-                print(f"Warning: config.json rollout_method={rollout_method!r}, "
-                      "but figures assume the ehull+rDOS composite score (beta=1.0, gamma from config).")
-            return float(config.get('gamma', default))
-        except Exception:
-            pass
-    return default
+    """Return the fixed normalized gamma for this study (ignores config.json)."""
+    return NORMALIZED_GAMMA
 
 
 def compute_composite(df, beta=1.0, gamma=None):
@@ -601,46 +602,6 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
     print('Wrote LaTeX table:', tex_path)
 
 
-def _set_plateau_xlim(ax, curves, buffer_frac=0.25, tol_frac=0.01, ignore_first=1):
-    """Truncate the x-axis around the transient of one or more same-length
-    curves: find the last index at which *any* curve still differs from its
-    own final value by more than tol_frac of its settled range, then size the
-    axis so that point sits at (1 - buffer_frac) of the width, leaving the
-    rest as flat-plateau context.
-
-    A relative tol_frac (rather than exact equality) matters once curves are
-    averaged across seeds: a single seed nudging the mean by a negligible,
-    sub-percent amount very late in the run would otherwise count as "still
-    changing" and drag the whole x-axis back out to the full run length.
-
-    ignore_first excludes a leading pre-search sentinel (e.g. best_reward =
-    -10.0 at iteration 0) from both the range and "still changing" checks, so
-    it doesn't swamp the real post-search dynamic range.
-
-    Using the slowest-to-settle curve (max plateau-start across `curves`)
-    keeps every curve's full transient visible when comparing several at once.
-    """
-    plateau_starts = []
-    n_iter = None
-    for arr in curves:
-        arr = np.asarray(arr, dtype=float)
-        if arr.size <= ignore_first:
-            continue
-        n_iter = len(arr) if n_iter is None else max(n_iter, len(arr))
-        body = arr[ignore_first:]
-        final_val = body[-1]
-        rng = np.nanmax(body) - np.nanmin(body)
-        tol = tol_frac * rng if rng > 0 else 1e-9 * max(1.0, abs(final_val))
-        changed = np.where(np.abs(body - final_val) > tol)[0]
-        plateau_starts.append((changed[-1] + 1 + ignore_first) if changed.size > 0 else ignore_first)
-    if not plateau_starts or n_iter is None:
-        return
-    plateau_start = min(max(plateau_starts), n_iter - 1)
-    if plateau_start > 0:
-        xmax = min(plateau_start / (1.0 - buffer_frac), n_iter - 1)
-        ax.set_xlim(0, xmax)
-
-
 def _metal_move_neighbors(z):
     """Transition-metal neighbor atomic numbers (same-period +-1, same-group
     +-18/+-32). Mirrors the move rules in mcts_crystal/node.py's
@@ -716,28 +677,74 @@ def _parse_tm_giv(formula):
     return tm, giv
 
 
+def _set_plateau_xlim(ax, curves, buffer_frac=0.25, tol_frac=0.01, ignore_first=1):
+    """Truncate the x-axis around the transient of one or more same-length
+    curves: find the last index at which *any* curve still differs from its
+    own final value by more than tol_frac of its settled range, then size the
+    axis so that point sits at (1 - buffer_frac) of the width, leaving the
+    rest as flat-plateau context.
+
+    A relative tol_frac (rather than exact equality) matters once curves are
+    averaged across seeds: a single seed nudging the mean by a negligible,
+    sub-percent amount very late in the run would otherwise count as "still
+    changing" and drag the whole x-axis back out to the full run length.
+
+    ignore_first excludes a leading pre-search sentinel (e.g. best_reward =
+    -10.0 at iteration 0) from both the range and "still changing" checks, so
+    it doesn't swamp the real post-search dynamic range.
+
+    Using the slowest-to-settle curve (max plateau-start across `curves`)
+    keeps every curve's full transient visible when comparing several at once.
+    """
+    plateau_starts = []
+    n_iter = None
+    for arr in curves:
+        arr = np.asarray(arr, dtype=float)
+        if arr.size <= ignore_first:
+            continue
+        n_iter = len(arr) if n_iter is None else max(n_iter, len(arr))
+        body = arr[ignore_first:]
+        final_val = body[-1]
+        rng = np.nanmax(body) - np.nanmin(body)
+        tol = tol_frac * rng if rng > 0 else 1e-9 * max(1.0, abs(final_val))
+        changed = np.where(np.abs(body - final_val) > tol)[0]
+        plateau_starts.append((changed[-1] + 1 + ignore_first) if changed.size > 0 else ignore_first)
+    if not plateau_starts or n_iter is None:
+        return
+    plateau_start = min(max(plateau_starts), n_iter - 1)
+    if plateau_start > 0:
+        xmax = min(plateau_start / (1.0 - buffer_frac), n_iter - 1)
+        ax.set_xlim(0, xmax)
+
+
 def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Path):
     """Compare convergence dynamics across different starting materials.
 
-    Reuses sensitivity_studies/results/starting_material_sweep/convergence_data.csv
-    instead of re-running MCTS: that sweep already uses this study's exact
-    composite reward (rollout_method='ehull_rdos', beta=1.0, gamma=0.0001 -
-    see sensitivity_studies/scripts/common.py BASELINE), varying only
-    transition_metal/group_iv, with 5 seeds per starting material. Each line
-    below is the mean best-composite-so-far across those 5 seeds, with a
-    shaded 10th-90th percentile band (not mean +/- std: std is a parametric
-    estimate that can extend past the best value any seed actually reached,
-    which would misleadingly suggest the search found something better than
-    it did. A percentile band is computed directly from the observed seeds,
-    so it can never exceed what was actually seen).
+    Reuses sensitivity_studies/results/starting_material_sweep_final/convergence_data.csv
+    (generated by this directory's own sweep_starting_material.py, which adds
+    gamma=NORMALIZED_GAMMA to every replicate - the calibrated study's
+    starting_material_sweep/ uses gamma=0.0001 and is NOT reused here) instead
+    of re-running MCTS inline: that sweep uses this study's exact composite
+    reward (rollout_method='ehull_rdos', beta=1.0, gamma=NORMALIZED_GAMMA),
+    varying only transition_metal/group_iv, with 5 seeds per starting
+    material. Each line below is the mean best-composite-so-far across those
+    5 seeds, with a shaded 10th-90th percentile band (not mean +/- std: std is
+    a parametric estimate that can extend past the best value any seed
+    actually reached, which would misleadingly suggest the search found
+    something better than it did. A percentile band is computed directly from
+    the observed seeds, so it can never exceed what was actually seen).
 
     Each legend entry also reports the move-graph edit distance from that
-    starting material to the true global-best U-only compound (per
-    compute_global_u_only_ranks), to show that starting further away from
-    the optimum is *why* that material converges slower.
+    starting material to the true global-best U-only compound under
+    NORMALIZED_GAMMA (per compute_global_u_only_ranks - this is UTi6Sn6, not
+    the calibrated study's UZr6Pb6, so the ladder of starting materials here
+    is its own Cr/Fe/Ni/Pt6Sn6U set chosen to land on d=2/4/6/8 to THIS
+    target, not the calibrated study's V/Ru/Pd/Cu6Ge6U set), to show that
+    starting further away from the optimum is *why* that material converges
+    slower.
     """
     sweep_csv = (mcts_materials_root / 'sensitivity_studies' / 'results'
-                 / 'starting_material_sweep' / 'convergence_data.csv')
+                 / 'starting_material_sweep_final' / 'convergence_data.csv')
     if not sweep_csv.exists():
         print('Skipping convergence_by_starting_material: missing', sweep_csv)
         return

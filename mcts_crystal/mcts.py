@@ -176,7 +176,8 @@ class MCTS:
     def _run_rollout_samples(self, new_node: MCTSTreeNode, rollout_depth: int,
                               n_rollout: int, energy_calculator, mode: str,
                               doscar_lookup, n_workers: int,
-                              rollout_aggregation: str = 'max') -> List[float]:
+                              rollout_aggregation: str = 'max',
+                              rollout_discount: float = 0.9) -> List[float]:
         """
         Evaluate n_rollout independent rollout samples for new_node and return
         their (scaled) rewards. The first sample always uses depth=0 (evaluates
@@ -206,8 +207,14 @@ class MCTS:
             n_workers: Number of worker threads to use for the extra samples
                 (n_workers <= 1 runs them sequentially with the shared global
                 random state, identical to the pre-parallelism behavior)
-            rollout_aggregation: 'max' (default) applies the 0.9**rollout_depth
-                discount to the extra samples; 'mean' leaves them undiscounted
+            rollout_aggregation: 'max' (default) applies the
+                rollout_discount**rollout_depth discount to the extra samples;
+                'mean' leaves them undiscounted
+            rollout_discount: Base of the depth discount applied under 'max'
+                aggregation (default: 0.9). Set to 1.0 to disable the discount
+                entirely - extra samples are then compared to the depth=0
+                sample on equal footing before taking the max. Unused under
+                'mean' aggregation.
 
         Returns:
             List of reward values, one per rollout sample
@@ -219,7 +226,7 @@ class MCTS:
         if n_extra <= 0:
             return rewards
 
-        scale = 0.9 ** rollout_depth if rollout_aggregation == 'max' else 1.0
+        scale = rollout_discount ** rollout_depth if rollout_aggregation == 'max' else 1.0
 
         if n_workers <= 1:
             for _ in range(n_extra):
@@ -257,7 +264,8 @@ class MCTS:
                            energy_calculator=None, rollout_method: str = 'ehull',
                            beta: float = 1.0, gamma: float = 0.0001,
                            doscar_lookup=None, n_workers: int = 1,
-                           rollout_aggregation: str = 'max') -> Tuple[float, bool]:
+                           rollout_aggregation: str = 'max',
+                           rollout_discount: float = 0.9) -> Tuple[float, bool]:
         """
         Expand selected node and perform rollout simulation.
 
@@ -274,10 +282,11 @@ class MCTS:
             rollout_aggregation: How to combine the n_rollout reward samples into
                 this node's reward - 'max' (default, original behavior: optimistic,
                 biased upward by however many samples are drawn, with the extra
-                samples discounted by 0.9**rollout_depth before comparison) or
-                'mean' (plain average of undiscounted samples - an unbiased
-                estimate of the node's expected reward; see _run_rollout_samples
-                for why the discount is dropped here rather than reused)
+                samples discounted by rollout_discount**rollout_depth before
+                comparison) or 'mean' (plain average of undiscounted samples)
+            rollout_discount: Base of the depth discount under 'max' aggregation
+                (default: 0.9). Set to 1.0 to disable discount. See
+                _run_rollout_samples() for details.
 
         Returns:
             Tuple of (reward, renew_t_to_terminate_flag)
@@ -289,21 +298,24 @@ class MCTS:
             if not self.current_node.expansion_list:
                 self.current_node.expand()
             
-        # Select random node from expansion list
-        new_node = random.choice(self.current_node.expansion_list)
-        
-        # Try to find unexplored node (up to 10 retries)
-        retry_count = 0
-        while (new_node.get_chemical_formula() in self.stat_dict and 
-               self.current_node != new_node and retry_count < 10):
-            if retry_count == 10:
-                # Use termination status from stat_dict if available
-                if new_node.get_chemical_formula() in self.stat_dict:
-                    new_node.terminated = self.stat_dict[new_node.get_chemical_formula()][2]
-                break
-            new_node = random.choice(self.current_node.expansion_list)
-            retry_count += 1
-            
+        # Prefer candidates whose formula has not yet been seen anywhere in the
+        # tree (in stat_dict). This prevents wasting an expansion slot on a
+        # composition the search has already evaluated via a different parent,
+        # improving coverage of genuinely new chemical space. If every candidate
+        # in the expansion list has already been seen (the node is in a
+        # densely-explored neighbourhood), fall back to the full list so the
+        # search isn't stuck - the selected node inherits the termination status
+        # already recorded in stat_dict.
+        unseen = [n for n in self.current_node.expansion_list
+                  if n.get_chemical_formula() not in self.stat_dict]
+        draw_pool = unseen if unseen else self.current_node.expansion_list
+        new_node = random.choice(draw_pool)
+        if not unseen:
+            # All candidates already seen - inherit recorded termination status
+            formula = new_node.get_chemical_formula()
+            if formula in self.stat_dict:
+                new_node.terminated = self.stat_dict[formula][2]
+
         # Remove from expansion list and add to tree
         self.current_node.expansion_list.remove(new_node)
         new_node.add_parent(self.current_node)
@@ -325,7 +337,7 @@ class MCTS:
 
         rewards = self._run_rollout_samples(
             new_node, rollout_depth, n_rollout, energy_calculator, mode,
-            doscar_lookup, n_workers, rollout_aggregation
+            doscar_lookup, n_workers, rollout_aggregation, rollout_discount
         )
 
         if rollout_aggregation == 'max':
@@ -452,7 +464,8 @@ class MCTS:
             selection_mode: str = 'ucb1', rollout_method: str = 'ehull',
             beta: float = 1.0, gamma: float = 0.0001,
             doscar_lookup=None, n_workers: int = 1,
-            rollout_aggregation: str = 'max') -> Dict:
+            rollout_aggregation: str = 'max',
+            rollout_discount: float = 0.9) -> Dict:
         """
         Run MCTS algorithm for specified number of iterations.
 
@@ -473,6 +486,9 @@ class MCTS:
                   'ehull':      reward = ehull_reward(e_above_hull)
                   'ehull_rdos': reward = beta*ehull_reward(e_above_hull) + gamma*r_DOS
                   'rdos':       reward = r_DOS
+            rollout_discount: Base of the depth discount under 'max' aggregation
+                (default: 0.9). Set to 1.0 to disable the discount entirely.
+                Unused under 'mean' aggregation.
             n_workers: Number of worker threads to evaluate each expansion's
                 n_rollout samples concurrently (default: 1, i.e. sequential,
                 identical to prior behavior). For a given n_workers value,
@@ -536,7 +552,8 @@ class MCTS:
                 gamma=gamma,
                 doscar_lookup=doscar_lookup,
                 n_workers=n_workers,
-                rollout_aggregation=rollout_aggregation
+                rollout_aggregation=rollout_aggregation,
+                rollout_discount=rollout_discount
             )
 
             # Back-propagation

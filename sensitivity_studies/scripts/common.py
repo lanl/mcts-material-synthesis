@@ -65,9 +65,10 @@ BASELINE = dict(
     beta=1.0,
     gamma=0.0001,
     rollout_aggregation='max',
+    rollout_discount=0.9,
 )
 
-N_SEEDS = 5
+N_SEEDS = 10
 N_ITERATIONS = 500
 SEEDS = list(range(N_SEEDS))
 
@@ -120,6 +121,7 @@ def run_replicate(atoms_template, energy_calc, doscar_lookup, seed, params):
         gamma=cfg['gamma'],
         doscar_lookup=doscar_lookup,
         rollout_aggregation=cfg['rollout_aggregation'],
+        rollout_discount=cfg['rollout_discount'],
     )
     return np.array(mcts.max_reward_history)
 
