@@ -47,3 +47,7 @@ analysis/ehull_rdos_u_only_study_max_undiscounted/d5_start_run/
 sensitivity_studies/results/**/*.csv
 sensitivity_studies/results/**/*.json
 writing
+
+# SI figure generation script and output (regenerate locally)
+writing/draft_v3/generate_ehull_vs_eform.py
+writing/draft_v3/figures/supp/ehull_vs_eform.png

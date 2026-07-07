@@ -42,14 +42,16 @@ from mcts_crystal.cli import override_composition
 # effects aren't masked by starting so close to the optimum that the search
 # converges before any hyperparameter can matter.
 #
-# n_rollout=2/rollout_depth=3 means: every expansion evaluates the new node's
-# own (real, exact) reward, plus exactly one extra random-walk sample 3 moves
-# further out (child -> its child -> its child), discounted by 0.9**3 before
-# being taken as the max against the real reward - see
-# MCTS._run_rollout_samples's docstring in mcts_crystal/mcts.py. With
-# n_rollout=1 that extra chained sample never runs at all, making
-# rollout_depth a complete no-op, which is why both were bumped together.
-# Each sweep overrides only the key(s) it is studying.
+# n_rollout=2/rollout_depth=2 means: every expansion draws two reward samples.
+# The first (depth=0) evaluates the new node's own composition and records its
+# e_form/e_above_hull. The second (depth=2) performs a max-along-walk: two
+# successive random substitutions are applied, the composite reward is scored
+# at *each* intermediate composition, and the maximum of those two step-rewards
+# is returned. rollout_discount=1.0 means neither sample is discounted before
+# taking the max. With n_rollout=1 the depth>0 walk never runs, making
+# rollout_depth a no-op. Each sweep overrides only the key(s) it is studying.
+# gamma = 1/max(r_DOS over 108 U-only compounds) = 1/2516.1664410449775,
+# matching analysis/ehull_rdos_u_only_study_max_undiscounted/run_study.sh.
 BASELINE = dict(
     transition_metal='Pd',
     group_iv='Ge',
@@ -59,13 +61,14 @@ BASELINE = dict(
     epsilon=0.2,
     temperature=1.0,
     termination_limit=25,
-    rollout_depth=3,
+    rollout_depth=2,
     n_rollout=2,
     rollout_method='ehull_rdos',
     beta=1.0,
-    gamma=0.0001,
+    gamma=0.00039742998860786596,
     rollout_aggregation='max',
-    rollout_discount=0.9,
+    rollout_discount=1.0,
+    move_step=1,
 )
 
 N_SEEDS = 10
@@ -106,6 +109,7 @@ def run_replicate(atoms_template, energy_calc, doscar_lookup, seed, params):
         atoms, f_block_mode=cfg['f_block_mode'],
         exploration_constant=cfg['exploration_constant'],
         termination_limit=cfg['termination_limit'],
+        move_step=cfg.get('move_step', 1),
     )
     root.e_form, root.e_above_hull = energy_calc.calculate_energies(atoms)
 
