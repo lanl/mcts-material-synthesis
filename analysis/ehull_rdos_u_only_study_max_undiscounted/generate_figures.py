@@ -2,19 +2,20 @@
 """
 Generate publication figures as PNGs directly from MCTS outputs and high-throughput data.
 
-This is the gamma-normalized variant of analysis/ehull_rdos_u_only_study/: same
-study (same starting material, same MCTS hyperparameters), but gamma is fixed to
-1 / (max raw r_DOS across the 108 U-only compounds) = 1/2516.1664410449775 instead
-of the calibrated 0.0001, so the best compound's gamma*r_DOS term tops out at 1.0 -
-the same scale as ehull_reward's ~[-1,1] range. See NORMALIZED_GAMMA below; unlike
-the original study, this gamma is NOT read from config.json (config.json stays at
-gamma=0.0001 for the calibrated study).
+Max-undiscounted study:
+  - gamma = 1/(max raw r_DOS across the 108 U-only compounds) = 1/2516.1664410449775
+    (normalizes gamma*r_DOS to top out at 1.0, same scale as ehull_reward's ~[-1,1] range;
+    see NORMALIZED_GAMMA below - NOT read from config.json)
+  - rollout_aggregation = max with rollout_discount=1.0 (no 0.9^depth decay on extra
+    rollout samples — all samples compared on equal footing before taking the max)
+
+Contrasts with ehull_rdos_u_only_study_final/ (same gamma, mean aggregation) and
+ehull_rdos_u_only_study_normalized/ (same gamma, max+0.9^depth discount).
 
 This script replaces the prior gnuplot/prepare pipeline and writes PNG files:
 - ehull_vs_rdos.png
 - convergence_by_starting_material.png (reuses sweep_starting_material.py's own
-  starting_material_sweep_normalized data here, NOT the calibrated study's
-  starting_material_sweep/)
+  starting_material_sweep_max_undiscounted data here)
 - radial_tree_composite.png (delegates to create_composite_radial_tree.py)
 
 It expects to be run from this directory where the MCTS run outputs
@@ -35,6 +36,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import subprocess
 import sys
+import shutil
 import re
 import json
 import pickle
@@ -313,13 +315,17 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     # Some entries may not map; attempt conversion using same heuristic as DoscarRewardLookup
     # For robustness, keep 0.0 where not found.
 
-    # load experimental attempted compounds list from canonical in-repo location
-    exp_src = repo_root / 'analysis' / 'compounds_filtered.dat'
+    # attempt to load experimental compounds list (if provided elsewhere in repo)
+    exp_src = repo_root / 'redo_mcts_materials' / 'experimental_comparison' / 'compounds_filtered.dat'
+    exp_dst = out_dir / 'compounds_filtered.dat'
     df_exp = None
     if exp_src.exists():
         try:
             df_exp = pd.read_csv(exp_src, sep=r"\s+", comment='#', header=None,
                                 names=['name', 'e_form', 'e_hull'])
+            # copy into analysis folder for consistency and ignore in git
+            if not exp_dst.exists():
+                shutil.copy(exp_src, exp_dst)
         except Exception:
             df_exp = None
 
@@ -389,12 +395,12 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     composite_csv = mcts_run_dir / 'all_compounds_by_composite_score.csv'
     if composite_csv.exists():
         df_comp = pd.read_csv(composite_csv)
-        top10 = df_comp.head(10)
+        top15 = df_comp.head(15)
         mace_lookup = {}
         for _, r in df_u.iterrows():
             mace_lookup[_formula_key(r['name'])] = (r['e_above_hull'], r.get('r_dos', r.get('r_DOS', 0.0)))
         xs, ys = [], []
-        for _, row in top10.iterrows():
+        for _, row in top15.iterrows():
             name = row['name'] if 'name' in row else row.get('formula')
             key = _formula_key(name)
             if key in mace_lookup:
@@ -403,7 +409,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
                 ys.append(e_hull)
         if xs:
             ax.scatter(xs, ys, s=45, color='#5BC0EB', marker='^', edgecolors='none',
-                       alpha=0.65, label='Top 10 (MCTS)')
+                       alpha=0.45, label='Top 15 (MCTS)')
 
     # Annotate which starting material produced this Top-10 overlay, and how
     # far (in MCTS move-graph hops) it is from the true global-best compound.
@@ -419,7 +425,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     # All compounds: small light-gray circle (no line)
     legend_handles.append(Line2D([0], [0], marker='o', linestyle='None', markerfacecolor='#D0D0D0', markeredgecolor='#D0D0D0', markersize=6, label='All Compounds'))
     # Top10 (MCTS): light blue filled triangle (no line)
-    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='none', markersize=8, label='Top 10 (MCTS)'))
+    legend_handles.append(Line2D([0], [0], marker='^', linestyle='None', markerfacecolor='#5BC0EB', markeredgecolor='none', markersize=8, alpha=0.45, label='Top 15 (MCTS)'))
     # Unsuccessful: purple unfilled square (no line)
     legend_handles.append(Line2D([0], [0], marker='s', linestyle='None', markerfacecolor='none', markeredgecolor='#9467bd', markersize=8, label='Unsuccessful Synthesis'))
     # Successful: purple filled square with purple edge (no line)
@@ -428,7 +434,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     plt.tight_layout()
     if start_label is not None:
         dist_str = f", d={start_dist} to global best" if start_dist is not None else ""
-        fig.text(0.5, -0.02, f"Top 10 (MCTS) from {start_label} start{dist_str}",
+        fig.text(0.5, -0.02, f"Top 15 (MCTS) from {start_label} start{dist_str}",
                   ha='center', va='top', fontsize=7)
     out = out_dir / 'ehull_vs_rdos.png'
     fig.savefig(out, dpi=300, bbox_inches='tight')
@@ -547,7 +553,7 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
     # (same experimental-attempts file used for the Successful/Unsuccessful
     # Synthesis overlay in plot_ehull_vs_rdos). Anything not in this list was
     # never attempted, so the table should show '-' rather than 'No'.
-    attempted_path = repo_root / 'analysis' / 'compounds_filtered.dat'
+    attempted_path = out_dir / 'compounds_filtered.dat'
     attempted_sets = []
     if attempted_path.exists():
         try:
@@ -713,7 +719,7 @@ def _set_plateau_xlim(ax, curves, buffer_frac=0.25, tol_frac=0.01, ignore_first=
 def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Path):
     """Compare convergence dynamics across different starting materials.
 
-    Reuses sensitivity_studies/results/starting_material_sweep_normalized/convergence_data.csv
+    Reuses sensitivity_studies/results/starting_material_sweep_max_undiscounted/convergence_data.csv
     (generated by this directory's own sweep_starting_material.py, which adds
     gamma=NORMALIZED_GAMMA to every replicate - the calibrated study's
     starting_material_sweep/ uses gamma=0.0001 and is NOT reused here) instead
@@ -737,7 +743,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
     slower.
     """
     sweep_csv = (mcts_materials_root / 'sensitivity_studies' / 'results'
-                 / 'starting_material_sweep_normalized' / 'convergence_data.csv')
+                 / 'starting_material_sweep_max_undiscounted' / 'convergence_data.csv')
     if not sweep_csv.exists():
         print('Skipping convergence_by_starting_material: missing', sweep_csv)
         return
@@ -770,12 +776,12 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
 
         g_plot = g[g['iteration'] >= 1]
         formula = value.split(' (')[0]
-        label = format_name_u_tm_giv(formula)
+        label = value.split('(')[1].rstrip(')') if '(' in value else value
         if target_tm and target_giv:
             tm, giv = _parse_tm_giv(formula)
             if tm and giv:
                 d = _edit_distance_to_target(tm, giv, target_tm, target_giv)
-                label = f"{label} (d={d})"
+                label = f"d={d}"
         ax.plot(g_plot['iteration'], g_plot['mean'], lw=1.8, color=color, label=label)
         ax.fill_between(g_plot['iteration'], g_plot['p10'], g_plot['p90'],
                          color=color, alpha=0.2, linewidth=0)
@@ -783,7 +789,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
     _set_plateau_xlim(ax, curves_for_xlim)
     ax.set_xlabel('Iteration')
     ax.set_ylabel('Best Composite Score')
-    ax.legend(fontsize=7, title='Starting material (edit dist. to best)', title_fontsize=7, loc='lower left')
+    ax.legend(fontsize=7, title='Edit distance to global best', title_fontsize=7, loc='lower left')
     plt.tight_layout()
     out = out_dir / 'convergence_by_starting_material.png'
     fig.savefig(out, dpi=600)
@@ -793,7 +799,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
 
 def main():
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parents[1]
+    repo_root = script_dir.parents[2]
     out_dir = script_dir
 
     # Ensure a subsidiary figures directory exists; we'll move all generated PNGs here

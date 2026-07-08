@@ -184,7 +184,8 @@ def build_tree_data(mcts):
             "r_dos": r_dos,
             "composite": composite,
             "parent_id": parent_id,
-            "visit_count": node.t_of_visit
+            "visit_count": node.t_of_visit,
+            "total_reward": node.total_reward if hasattr(node, 'total_reward') else 0.0,
         }
 
         for i, child in enumerate(node.children):
@@ -250,7 +251,8 @@ def main():
                 'composites': [],
                 'e_hulls': [],
                 'r_doss': [],
-                'visit_count': 0
+                'visit_count': 0,
+                'total_reward': 0.0,
             }
         if info.get('composite') is not None:
             unique_map[key]['composites'].append(info['composite'])
@@ -258,6 +260,7 @@ def main():
             unique_map[key]['e_hulls'].append(info['e_hull'])
         unique_map[key]['r_doss'].append(info.get('r_dos', 0.0))
         unique_map[key]['visit_count'] += int(info.get('visit_count', 0) or 0)
+        unique_map[key]['total_reward'] += float(info.get('total_reward', 0.0) or 0.0)
 
         parent = info.get('parent_id')
         if parent is None:
@@ -296,7 +299,10 @@ def main():
         rdos_agg = max(rdos_vals) if rdos_vals else 0.0
         eh_vals = [v for v in info['e_hulls'] if v is not None]
         eh_agg = eh_vals[0] if eh_vals else None
-        G.add_node(key, formula=key, composite=comp_agg, e_hull=eh_agg, r_dos=rdos_agg, visit_count=info['visit_count'])
+        vc = info['visit_count']
+        q_per_n = info['total_reward'] / vc if vc > 0 else None
+        G.add_node(key, formula=key, composite=comp_agg, e_hull=eh_agg, r_dos=rdos_agg,
+                   visit_count=vc, q_per_n=q_per_n)
 
     for a, b in edges:
         if a in nodes_keep_set and b in nodes_keep_set:
@@ -321,7 +327,7 @@ def main():
     composites = {n: G.nodes[n].get('composite', None) for n in G.nodes()}
     ehull_rewards = {}
     r_doss = {}
-    visit_counts = {}
+    q_per_ns = {}
     for n in G.nodes():
         eh = G.nodes[n].get('e_hull', None)
         try:
@@ -329,7 +335,8 @@ def main():
         except Exception:
             ehull_rewards[n] = np.nan
         r_doss[n] = float(G.nodes[n].get('r_dos', 0.0) or 0.0)
-        visit_counts[n] = float(G.nodes[n].get('visit_count', 0) or 0.0)
+        qn = G.nodes[n].get('q_per_n', None)
+        q_per_ns[n] = float(qn) if qn is not None else np.nan
 
     # Choose readable sequential colormaps
     cmap_comp = matplotlib.colormaps['viridis']
@@ -344,6 +351,10 @@ def main():
     # Color by gamma * r_DOS (the actual composite-score component), not raw r_DOS
     arr_r = [v * DEFAULT_GAMMA for v in r_doss.values() if v is not None and not pd.isna(v)]
     norm_rdos = mcolors.Normalize(vmin=min(arr_r), vmax=max(arr_r)) if arr_r else None
+
+    cmap_qpern = matplotlib.colormaps['Purples']
+    arr_qn = [v for v in q_per_ns.values() if not pd.isna(v)]
+    norm_qpern = mcolors.Normalize(vmin=min(arr_qn), vmax=max(arr_qn)) if arr_qn else None
 
     if norm_comp is None:
         print("No composite scores available")
@@ -363,6 +374,7 @@ def main():
     node_colors_ehull = node_colors_for_from_graph('e_hull', cmap_ehull, norm_ehull)
     # Color by gamma * r_dos, explicitly labeled below
     node_colors_rdos = node_colors_for_from_graph('r_dos', cmap_rdos, norm_rdos, scale=DEFAULT_GAMMA)
+    node_colors_qpern = node_colors_for_from_graph('q_per_n', cmap_qpern, norm_qpern)
 
     # Set global font size to 10pt for consistent publication text
     plt.rcParams.update({'font.size': 10})
@@ -384,23 +396,20 @@ def main():
     tree_edges = [e for e in G.edges() if e in bfs_tree_edges]
     cross_edges = [e for e in G.edges() if e not in bfs_tree_edges]
 
-    # Create a wide figure: 6in wide x 2.75in tall with 3 panels
-    fig, axes = plt.subplots(1, 3, figsize=(6, 2.75), constrained_layout=True)
+    # Create a wide figure: 8in wide x 2.75in tall with 4 panels
+    fig, axes = plt.subplots(1, 4, figsize=(8, 2.75), constrained_layout=True)
 
     panels = [
         (axes[0], node_colors_comp, cmap_comp, norm_comp, 'Composite Score'),
         (axes[1], node_colors_ehull, cmap_ehull, norm_ehull, r"$r_{E_{\mathrm{Hull}}}$"),
         (axes[2], node_colors_rdos, cmap_rdos, norm_rdos,
-         r"$\lambda_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$")
+         r"$\alpha_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$"),
+        (axes[3], node_colors_qpern, cmap_qpern, norm_qpern, r"$Q/N$"),
     ]
 
-    labels_abc = ['(a)', '(b)', '(c)']
+    labels_abc = ['(a)', '(b)', '(c)', '(d)']
     for i, (ax, ncols, cmap_m, norm_m, label) in enumerate(panels):
         # Draw edges first so smaller nodes sit cleanly on top of arrow tips.
-        # Revisit cross-links: faint, thin, no arrowheads (background texture).
-        if cross_edges:
-            nx.draw_networkx_edges(G, pos, ax=ax, edgelist=cross_edges,
-                                   edge_color='gray', width=0.3, alpha=0.25, arrows=False)
         # Spanning-tree edges: the actual branch structure, drawn bold with arrows.
         nx.draw_networkx_edges(G, pos, ax=ax, edgelist=tree_edges,
                                edge_color='dimgray', width=0.7, arrows=True, arrowsize=5,
@@ -433,7 +442,7 @@ def main():
         except Exception:
             pass
 
-    caption = '★ starting node (MCTS root)    bold arrow = expansion step    faint line = revisit of an existing composition'
+    caption = '★ starting node (MCTS root)    bold arrow = expansion step'
     if start_info.get('label'):
         dist_str = f", d={start_info['distance']} to global best" if start_info.get('distance') is not None else ''
         caption += f"\nStarting material: {start_info['label']}{dist_str}"

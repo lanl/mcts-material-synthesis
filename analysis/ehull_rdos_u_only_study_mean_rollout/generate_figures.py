@@ -421,7 +421,7 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     if start_label is None:
         start_label, start_dist = describe_mcts_run_starting_material(mcts_run_dir, repo_root)
 
-    ax.set_xlabel(r"$\lambda_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$")
+    ax.set_xlabel(r"$\alpha_{\mathrm{DOS}} \cdot r_{\mathrm{DOS}}$")
     ax.set_ylabel(r"$E_{\mathrm{Hull}}$ (eV/atom)")
     ax.axhline(0, color='k', linestyle='--', linewidth=0.8)
     # Create a clean legend with specific marker styles so Top10 appears as a triangle
