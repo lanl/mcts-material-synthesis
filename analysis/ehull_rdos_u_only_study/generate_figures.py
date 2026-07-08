@@ -25,7 +25,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import subprocess
 import sys
-import shutil
 import re
 import json
 import pickle
@@ -315,17 +314,13 @@ def plot_ehull_vs_rdos(repo_root: Path, out_dir: Path, mcts_run_dir: Path = None
     # Some entries may not map; attempt conversion using same heuristic as DoscarRewardLookup
     # For robustness, keep 0.0 where not found.
 
-    # attempt to load experimental compounds list (if provided elsewhere in repo)
-    exp_src = repo_root / 'redo_mcts_materials' / 'experimental_comparison' / 'compounds_filtered.dat'
-    exp_dst = out_dir / 'compounds_filtered.dat'
+    # load experimental attempted compounds list from canonical in-repo location
+    exp_src = repo_root / 'analysis' / 'compounds_filtered.dat'
     df_exp = None
     if exp_src.exists():
         try:
             df_exp = pd.read_csv(exp_src, sep=r"\s+", comment='#', header=None,
                                 names=['name', 'e_form', 'e_hull'])
-            # copy into analysis folder for consistency and ignore in git
-            if not exp_dst.exists():
-                shutil.copy(exp_src, exp_dst)
         except Exception:
             df_exp = None
 
@@ -553,7 +548,7 @@ def write_top15_table(df_sorted: pd.DataFrame, out_dir: Path, repo_root: Path):
     # (same experimental-attempts file used for the Successful/Unsuccessful
     # Synthesis overlay in plot_ehull_vs_rdos). Anything not in this list was
     # never attempted, so the table should show '-' rather than 'No'.
-    attempted_path = out_dir / 'compounds_filtered.dat'
+    attempted_path = repo_root / 'analysis' / 'compounds_filtered.dat'
     attempted_sets = []
     if attempted_path.exists():
         try:
@@ -793,7 +788,7 @@ def plot_convergence_by_starting_material(mcts_materials_root: Path, out_dir: Pa
 
 def main():
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parents[2]
+    repo_root = script_dir.parents[1]
     out_dir = script_dir
 
     # Ensure a subsidiary figures directory exists; we'll move all generated PNGs here
