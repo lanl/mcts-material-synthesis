@@ -7,5 +7,6 @@
   "selection_mode": "ucb1",
   "epsilon": 0.2,
   "temperature": 1.0,
-  "exploration_constant": 0.1
+  "exploration_constant": 0.1,
+  "rollout_aggregation": "max"
 }

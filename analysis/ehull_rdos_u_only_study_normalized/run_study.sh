@@ -22,6 +22,12 @@
 #   - a Materials Project API key, supplied via config.json (preferred, gitignored)
 #     or the MP_API_KEY environment variable below
 #
+# See config.example.json in this directory for the exact effective settings
+# this study used, including the normalized gamma value (mp_api_key is a
+# placeholder, never a real key). It documents the repo-root config.json this
+# study was run against (plus the --gamma override below); it is not itself
+# read by any script here.
+#
 # selection_mode, exploration_constant, iterations, transition_metal, group_iv
 # are NOT hardcoded as CLI flags here - they come from config.json so there is
 # one source of truth for these hyperparameters across run_mcts.py and the

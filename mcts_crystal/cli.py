@@ -70,7 +70,8 @@ def load_config(config_path: str = 'config.json') -> dict:
         return {}
 
 
-def override_composition(atoms: Atoms, transition_metal: str = None, group_iv: str = None) -> Atoms:
+def override_composition(atoms: Atoms, transition_metal: str = None, group_iv: str = None,
+                         f_block_element: str = None) -> Atoms:
     """
     Override the composition of a structure while maintaining the crystal structure.
 
@@ -78,34 +79,38 @@ def override_composition(atoms: Atoms, transition_metal: str = None, group_iv: s
         atoms: ASE Atoms object with template structure
         transition_metal: Symbol for transition metal (e.g., 'Rh', 'Pt', 'W')
         group_iv: Symbol for Group IV element (e.g., 'Si', 'Ge', 'Sn', 'Pb')
+        f_block_element: Symbol for f-block element (e.g., 'Ce', 'Eu', 'Yb'). Replaces
+            whichever f-block element is present in the CIF (default: unchanged).
 
     Returns:
         New Atoms object with substituted elements
     """
-    # Element symbol to atomic number mapping
+    from ase.data import atomic_numbers as ase_atomic_numbers
+
+    # Define element groups
+    transition_metals = list(range(22, 31)) + list(range(40, 49)) + list(range(72, 81))
+    group_iv_elements = [14, 32, 50, 82]
+    # f-block: lanthanides (57-71) + actinides (89-103)
+    f_block_elements = list(range(57, 72)) + list(range(89, 104))
+
     element_to_z = {
         'Ti': 22, 'V': 23, 'Cr': 24, 'Mn': 25, 'Fe': 26, 'Co': 27, 'Ni': 28, 'Cu': 29, 'Zn': 30,
         'Zr': 40, 'Nb': 41, 'Mo': 42, 'Tc': 43, 'Ru': 44, 'Rh': 45, 'Pd': 46, 'Ag': 47, 'Cd': 48,
         'Hf': 72, 'Ta': 73, 'W': 74, 'Re': 75, 'Os': 76, 'Ir': 77, 'Pt': 78, 'Au': 79, 'Hg': 80,
         'Si': 14, 'Ge': 32, 'Sn': 50, 'Pb': 82,
-        'U': 92
     }
 
-    # Define element groups
-    transition_metals = list(range(22, 31)) + list(range(40, 49)) + list(range(72, 81))
-    group_iv_elements = [14, 32, 50, 82]
-
-    # Get target atomic numbers
     target_tm_z = element_to_z.get(transition_metal) if transition_metal else None
     target_giv_z = element_to_z.get(group_iv) if group_iv else None
+    target_fb_z = ase_atomic_numbers.get(f_block_element) if f_block_element else None
 
-    # Validate
     if target_tm_z is not None and target_tm_z not in transition_metals:
         raise ValueError(f"Invalid transition metal: {transition_metal}")
     if target_giv_z is not None and target_giv_z not in group_iv_elements:
         raise ValueError(f"Invalid Group IV element: {group_iv}")
+    if target_fb_z is not None and target_fb_z not in f_block_elements:
+        raise ValueError(f"Invalid f-block element: {f_block_element}")
 
-    # Create new atoms with substitutions
     new_atoms = atoms.copy()
     atomic_numbers = new_atoms.get_atomic_numbers().copy()
 
@@ -114,7 +119,8 @@ def override_composition(atoms: Atoms, transition_metal: str = None, group_iv: s
             atomic_numbers[i] = target_tm_z
         elif z in group_iv_elements and target_giv_z is not None:
             atomic_numbers[i] = target_giv_z
-        # f-block elements (U) are not changed - kept as is
+        elif z in f_block_elements and target_fb_z is not None:
+            atomic_numbers[i] = target_fb_z
 
     new_atoms.set_atomic_numbers(atomic_numbers)
     return new_atoms
@@ -153,6 +159,9 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Weight for the rDOS reward when using ehull_rdos (default: 0.0001)')
     parser.add_argument('--termination-limit', type=int, default=60,
                        help='Number of visits before terminating a node without improvement (default: 60)')
+    parser.add_argument('--move-step', type=int, default=1,
+                       help='Max positions to move per substitution step for TM, group-IV, and '
+                            'lanthanide axes (default: 1 = adjacent only; 3 = extended mode)')
     parser.add_argument('--selection-mode', type=str, default='ucb1',
                        choices=['ucb1', 'epsilon_greedy', 'boltzmann', 'puct', 'hybrid'],
                        help='Child-selection strategy for the MCTS selection phase: '
@@ -166,10 +175,25 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Exploration rate for epsilon_greedy/hybrid selection modes (default: 0.2, range: 0.0-1.0). Unused by ucb1/boltzmann/puct.')
     parser.add_argument('--temperature', type=float, default=1.0,
                        help='Temperature for the boltzmann selection mode (default: 1.0). Higher = more uniform/exploratory, lower = closer to greedy argmax. Unused by other selection modes.')
-    parser.add_argument('--rollout-depth', type=int, default=1,
-                       help='Number of random mutations per rollout (default: 1). Higher values create more random compounds.')
-    parser.add_argument('--n-rollout', type=int, default=5,
-                       help='Number of rollout simulations per expansion (default: 5). Higher values increase computation per iteration.')
+    parser.add_argument('--rollout-depth', type=int, default=2,
+                       help='Number of random substitution steps per rollout walk (default: 2). Each step evaluates a new candidate; the max reward along the walk is returned (max-along-walk behavior).')
+    parser.add_argument('--n-rollout', type=int, default=2,
+                       help='Number of independent rollout walks per expansion (default: 2). The first walk has depth 0 (evaluates the node itself); remaining walks use --rollout-depth steps.')
+    parser.add_argument('--rollout-aggregation', type=str, default='max',
+                       choices=['max', 'mean'],
+                       help="How to combine a node's --n-rollout reward samples into its reward: "
+                            "max (default; optimistic, biased upward by however many samples are drawn - "
+                            "the original behavior; the n_rollout-1 extra samples are discounted by "
+                            "--rollout-discount**rollout_depth before comparison) or mean (plain average across "
+                            "UNDISCOUNTED samples, an unbiased estimate of the node's expected reward - "
+                            "the depth discount is dropped here since discounting-then-averaging-by-"
+                            "unweighted-n would just drag the mean toward zero rather than reflect "
+                            "lower confidence in farther samples).")
+    parser.add_argument('--rollout-discount', type=float, default=0.9,
+                       help="Base of the depth-dependent discount applied to extra rollout samples under "
+                            "'max' aggregation: extra samples are scaled by rollout_discount**rollout_depth "
+                            "before taking the max (default: 0.9). Set to 1.0 to compare all samples on "
+                            "equal footing with no discount. Unused under 'mean' aggregation.")
     parser.add_argument('--n-workers', type=int, default=1,
                        help='Number of worker threads to evaluate each expansion\'s rollout simulations concurrently (default: 1, i.e. sequential). Useful for ehull/ehull_rdos, where each rollout is an independent MACE relaxation + Materials Project call. For a fixed --n-workers value, --seed still reproduces identical results run-to-run (results will differ from a different --n-workers value at the same seed, since the RNG is consumed differently).')
     parser.add_argument('--seed', type=int, default=None,
@@ -182,6 +206,8 @@ def build_parser(config: Optional[dict] = None) -> argparse.ArgumentParser:
                        help='Override transition metal in starting structure (e.g., Rh, Pt, W). If specified, substitutes TM in loaded CIF file.')
     parser.add_argument('--group-iv', type=str, default=None,
                        help='Override Group IV element in starting structure (e.g., Si, Ge, Sn, Pb). If specified, substitutes Group IV in loaded CIF file.')
+    parser.add_argument('--f-block-element', type=str, default=None,
+                       help='Override f-block (rare-earth) element in starting structure (e.g., Ce, Eu, Yb). Replaces whichever f-block element is present in the CIF. Default: unchanged (U when using the standard CIF).')
 
     if config:
         # Local config supplies defaults; explicit CLI flags still take precedence.
@@ -246,9 +272,9 @@ def main():
         logger.info(f"   Atoms: {len(atoms)}")
 
         # Override composition if requested
-        if args.transition_metal is not None or args.group_iv is not None:
+        if args.transition_metal is not None or args.group_iv is not None or args.f_block_element is not None:
             logger.info(f"\n1.5. Overriding starting composition...")
-            atoms = override_composition(atoms, args.transition_metal, args.group_iv)
+            atoms = override_composition(atoms, args.transition_metal, args.group_iv, args.f_block_element)
             logger.info(f"   New composition: {atoms.get_chemical_formula()}")
     except Exception as e:
         logger.error(f"Error loading structure: {e}")
@@ -293,7 +319,8 @@ def main():
     try:
         root_node = MCTSTreeNode(atoms, f_block_mode=args.f_block_mode,
                                 exploration_constant=args.exploration_constant,
-                                termination_limit=args.termination_limit)
+                                termination_limit=args.termination_limit,
+                                move_step=args.move_step)
 
         # Calculate energies for root node (tracked for reference even when not part of the reward)
         root_e_form, root_e_hull = energy_calc.calculate_energies(atoms)
@@ -335,6 +362,8 @@ def main():
     logger.info(f"   Rollout method: {args.rollout_method}")
     logger.info(f"   Rollout depth: {args.rollout_depth}")
     logger.info(f"   Number of rollouts: {args.n_rollout}")
+    logger.info(f"   Rollout aggregation: {args.rollout_aggregation}")
+    logger.info(f"   Rollout discount: {args.rollout_discount}")
     logger.info(f"   Worker threads per expansion: {args.n_workers}")
     if args.rollout_method == 'ehull_rdos':
         logger.info(f"   Beta (E_hull weight, ehull_reward = -tanh(120*(E_hull-0.05))): {args.beta}")
@@ -352,7 +381,9 @@ def main():
             beta=args.beta,
             gamma=args.gamma,
             doscar_lookup=doscar_lookup,
-            n_workers=args.n_workers
+            n_workers=args.n_workers,
+            rollout_aggregation=args.rollout_aggregation,
+            rollout_discount=args.rollout_discount
         )
 
         logger.info(f"   Completed: {results['iterations_completed']} iterations")

@@ -1,8 +1,15 @@
 #!/bin/bash
+# Final-parameter study combining both parameter choices:
+#   gamma = 1/(max raw r_DOS across the 108 U-only compounds) = 1/2516.1664410449775
+#         = 0.00039742998860786596 (normalizes gamma*r_DOS to top out at 1.0,
+#           same scale as ehull_reward's ~[-1,1] range)
+#   rollout_aggregation = mean (unbiased average of undiscounted rollout samples,
+#           rather than the optimistic max with 0.9^d discount)
+# See analysis/ehull_rdos_u_only_study_normalized/ (gamma only) and
+# analysis/ehull_rdos_u_only_study_mean_rollout/ (mean aggregation only) for
+# the individual-parameter variants that led to this combined choice.
 # Reproduce the U-only ehull_rdos study: sharp tanh E_hull + DOSCAR reward
 # Reward = beta*ehull_reward(E_hull) + gamma*r_DOS, where ehull_reward = -tanh(120*(E_hull-0.05))
-# beta/gamma default to 1.0/0.0001 (see config.json/config.example.json - gamma is a single
-# value shared by the MCTS run and all analysis/plotting scripts)
 # F-block mode: u_only (108 composition design space)
 #
 # Starting material: Cr6Sn6U (transition_metal/group_iv from config.json,
@@ -17,10 +24,10 @@
 #     or the MP_API_KEY environment variable below
 #
 # See config.example.json in this directory for the exact effective settings
-# this study used (transition_metal/group_iv/gamma/selection_mode/exploration_constant/
-# iterations - mp_api_key is a placeholder, never a real key). It documents
-# the repo-root config.json this study was run against; it is not itself read
-# by any script here.
+# this study used, including the normalized gamma value (mp_api_key is a
+# placeholder, never a real key). It documents the repo-root config.json this
+# study was run against (plus the --gamma override below); it is not itself
+# read by any script here.
 #
 # selection_mode, exploration_constant, iterations, transition_metal, group_iv
 # are NOT hardcoded as CLI flags here - they come from config.json so there is
@@ -41,10 +48,13 @@ REPO_ROOT="$(cd "${STUDY_DIR}/../../" && pwd)"
 OUTPUT_DIR="${STUDY_DIR}"
 F_BLOCK_MODE="u_only"
 
+NORMALIZED_GAMMA="0.00039742998860786596"
+
 echo "=================================================="
-echo "EHULL + RDOS STUDY (U-only)"
-echo "Reward = beta*ehull_reward(E_hull) + gamma*r_DOS"
+echo "EHULL + RDOS STUDY (U-only, final parameters)"
+echo "Reward = beta*ehull_reward(E_hull) + gamma*r_DOS, gamma=${NORMALIZED_GAMMA}"
 echo "where ehull_reward = -tanh(120 * (E_hull - 0.05))"
+echo "Rollout aggregation: mean (undiscounted)"
 echo "=================================================="
 
 MP_API_KEY_ARG=()
@@ -68,6 +78,8 @@ python run_mcts.py \
     "${MP_API_KEY_ARG[@]}" \
     --rollout-depth 3 \
     --n-rollout 2 \
+    --gamma "${NORMALIZED_GAMMA}" \
+    --rollout-aggregation mean \
     --output "${OUTPUT_DIR}"
 
 echo ""
