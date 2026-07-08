@@ -53,3 +53,36 @@ writing
 # SI figure generation script and output (regenerate locally)
 writing/draft_v3/generate_ehull_vs_eform.py
 writing/draft_v3/figures/supp/ehull_vs_eform.png
+
+# Older study run directories (run outputs, regenerate locally)
+analysis/ehull_rdos_u_only_study_mean_rollout/
+analysis/ehull_rdos_u_only_study_normalized/
+analysis/ehull_rdos_u_only_study_final/
+
+# Discovery efficiency study — MCTS run output directories
+analysis/discovery_efficiency_study/*_start/
+analysis/discovery_efficiency_study/cu_tm/
+analysis/discovery_efficiency_study/fe_tm/
+analysis/discovery_efficiency_study/mn_tm/
+analysis/discovery_efficiency_study/ti_tm/
+analysis/discovery_efficiency_study/extended_mode/
+analysis/discovery_efficiency_study/run_study.log
+analysis/discovery_efficiency_study/run_study.sh
+analysis/discovery_efficiency_study/run_extended_10.sh
+analysis/discovery_efficiency_study/run_tm_variant.sh
+analysis/discovery_efficiency_study/figures/discovery_curve.png
+analysis/discovery_efficiency_study/figures/discovery_curve_compare.png
+analysis/discovery_efficiency_study/figures/discovery_curve_cr.png
+analysis/discovery_efficiency_study/figures/discovery_curve_cu.png
+analysis/discovery_efficiency_study/figures/discovery_curve_fe.png
+analysis/discovery_efficiency_study/figures/discovery_curve_edit_distance.png
+analysis/discovery_efficiency_study/tables/top15_best_run.tex
+analysis/ehull_rdos_u_only_study_max_undiscounted/figures/u_only_discovery_curve.png
+analysis/ehull_rdos_u_only_study_max_undiscounted/generate_u_discovery_figure.py
+analysis/ehull_rdos_u_only_study_max_undiscounted/sweep_starting_material_step2.py
+
+# Misc scripts not part of main workflow
+dos_only_study.py
+
+analysis/ehull_rdos_lanthanide_u_study_max_undiscounted/**/*.csv
+analysis/ehull_rdos_lanthanide_u_study_max_undiscounted/*.csv
