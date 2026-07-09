@@ -15,7 +15,7 @@ def sample_raw_data(tmp_path: Path) -> Path:
         "release_date": "2020-07-13",
         "reactions": [
             {
-                "doi": "10.1000/example1",
+                "doi": "10.1016/j.example.2018.01.001",
                 "paragraph_string": "BaCO3 and TiO2 were mixed, calcined, reground, and annealed in air.",
                 "synthesis_type": "solid-state",
                 "reaction_string": "BaCO3 + TiO2 -> BaTiO3",
@@ -50,7 +50,7 @@ def sample_raw_data(tmp_path: Path) -> Path:
                 "targets_string": ["BaTiO3"],
             },
             {
-                "doi": "10.1000/example2",
+                "doi": "10.1016/j.example.2019.02.002",
                 "paragraph_string": "SrCO3 and TiO2 were mixed and fired in air.",
                 "synthesis_type": "solid-state",
                 "reaction_string": "SrCO3 + TiO2 -> SrTiO3",
@@ -78,7 +78,7 @@ def sample_raw_data(tmp_path: Path) -> Path:
 
     solution_payload = [
         {
-            "doi": "10.1000/solution1",
+            "doi": "10.1016/j.solution.2020.03.003",
             "paragraph_string": "A hydrothermal BaTiO3 route.",
             "reaction": {"left_side": ["BaCl2", "TiCl4"], "right_side": ["BaTiO3"]},
             "reaction_string": "BaCl2 + TiCl4 -> BaTiO3",

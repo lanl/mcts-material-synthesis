@@ -54,3 +54,15 @@ The current normalization step is conservative:
 
 - `solid_state_routes.jsonl` is used directly by the current planner.
 - `solution_routes.jsonl` is prepared now so hydrothermal and precipitation planning can be added without revisiting the ingestion layer.
+
+## Benchmark splits
+
+The current benchmark utilities build retrospective splits from processed solid-state routes using:
+
+- `random`
+- `target_formula`
+- `chemical_system`
+- `material_family`
+- `publication_year`
+
+The publication-year split is heuristic and depends on whether a plausible year can be extracted from the DOI string.

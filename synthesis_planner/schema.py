@@ -43,9 +43,11 @@ class OperationRecord:
 class RouteRecord:
     route_id: str
     source_doi: str
+    publication_year: int | None
     modality: str
     target_formula: str
     target_elements: tuple[str, ...]
+    chemical_system: str
     target_class: str
     precursors: tuple[PrecursorRecord, ...]
     operations: tuple[OperationRecord, ...]
@@ -58,10 +60,22 @@ class RouteRecord:
 
 
 @dataclass(frozen=True)
+class LabConstraints:
+    min_temperature_c: float | None = None
+    max_temperature_c: float | None = None
+    allowed_atmospheres: tuple[str, ...] = field(default_factory=tuple)
+    forbidden_precursor_classes: tuple[str, ...] = field(default_factory=tuple)
+    max_precursors: int = 6
+    max_heating_steps: int = 3
+    require_mixing: bool = True
+
+
+@dataclass(frozen=True)
 class PlanningProblem:
     target_formula: str
     modality: str = "solid_state"
     max_precursors: int = 6
+    lab_constraints: LabConstraints = field(default_factory=LabConstraints)
 
 
 @dataclass(frozen=True)
@@ -72,7 +86,17 @@ class JudgeResult:
 
 
 @dataclass(frozen=True)
+class HardCheckResult:
+    valid: bool
+    flags: tuple[str, ...]
+    notes: tuple[str, ...]
+    coverage_fraction: float
+    blocking_flags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ScoreBreakdown:
+    validity: float
     stoich: float
     precursor: float
     thermo: float
@@ -93,6 +117,7 @@ class PlannedRoute:
     operations: tuple[OperationRecord, ...]
     evidence_dois: tuple[str, ...]
     analog_targets: tuple[str, ...]
+    hard_checks: HardCheckResult
     score: ScoreBreakdown
     judge: JudgeResult
     mcts_value: float

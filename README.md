@@ -8,8 +8,9 @@ The current codebase focuses on the proposal's first practical milestone:
 - a canonical route schema for mined synthesis recipes
 - a solid-state synthesis grammar over precursor choice, preparation, heating, and termination
 - retrieval of analogous literature routes
-- heuristic route scoring with hard-check style penalties and a deterministic judge
+- heuristic route scoring with explicit hard checks and a deterministic judge
 - Monte Carlo Tree Search over partial synthesis routes
+- retrospective split generation and benchmark evaluation
 
 The initial planner is intentionally a strong solid-state baseline, not a claim that the full proposal is finished. The solution-based dataset is downloaded and normalized for future hydrothermal and precipitation support, but the executable planner currently targets `solid_state` routes.
 
@@ -58,6 +59,18 @@ Plan routes for a target:
 python run_mcts.py plan --target BaTiO3 --iterations 250 --top-k 5
 ```
 
+Generate benchmark splits:
+
+```bash
+python run_mcts.py make-splits --split-type target_formula
+```
+
+Run a small retrospective benchmark:
+
+```bash
+python run_mcts.py benchmark --split-type chemical_system --iterations 50 --rollout-count 3
+```
+
 The planner writes ranked routes to `planning_results/` and prints a short summary to the terminal.
 
 ## Documentation
@@ -77,14 +90,16 @@ Given a target such as `BaTiO3`, the current planner:
    - preparation steps
    - heating schedule
    - finalization
-5. Scores completed routes using:
+5. Applies hard validity checks for element coverage, modality consistency, lab constraints, temperature bounds, atmosphere compatibility, and simple byproduct logic.
+6. Scores completed routes using:
    - element coverage
+   - hard validity
    - precursor plausibility
    - retrieval support
    - condition plausibility
    - hazard and complexity penalties
    - deterministic judge notes and failure flags
-6. Uses MCTS to prioritize promising partial routes and returns a small diverse portfolio.
+7. Uses MCTS to prioritize promising partial routes and returns a small diverse portfolio.
 
 ## Repo layout
 
@@ -111,6 +126,7 @@ Given a target such as `BaTiO3`, the current planner:
 - Thermodynamic scoring is heuristic at this stage; the proposal's richer physics integrations are not yet wired in.
 - The "LLM judge" is currently a deterministic rubric-based substitute so the repo works offline and remains testable.
 - Route scoring is still a baseline heuristic layer rather than a calibrated literature-plus-physics model.
+- The benchmark harness currently covers split generation and basic retrospective metrics, but not the full baseline/ablation matrix from the proposal.
 
 ## Verification
 
@@ -118,6 +134,13 @@ Unit tests:
 
 ```bash
 .venv/bin/python -m pytest
+```
+
+CLI smoke-tested commands:
+
+```bash
+.venv/bin/python run_mcts.py make-splits --split-type target_formula
+.venv/bin/python run_mcts.py benchmark --split-type random --test-fraction 0.0002 --iterations 8 --rollout-count 2
 ```
 
 The rewritten test suite covers the new synthesis-planning path rather than the legacy crystal-search code.

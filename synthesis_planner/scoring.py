@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from statistics import mean
 
-from .formula import required_target_elements
+from .constraints import evaluate_hard_constraints
+from .formula import safe_required_target_elements
 from .schema import JudgeResult, PlannedRoute, PlanningState, PrecursorRecord, RouteRecord, ScoreBreakdown
 
 
 def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]]) -> PlannedRoute:
-    required = required_target_elements(state.problem.target_formula)
-    coverage = {element for precursor in state.precursors for element in precursor.elements}
+    hard_checks = evaluate_hard_constraints(state)
 
-    stoich = 1.0 if required <= coverage else 0.0
+    stoich = hard_checks.coverage_fraction
+    validity = 1.0 if hard_checks.valid else 0.0
     retrieval = max((score for score, _ in analogs), default=0.0) / 10.0
     precursor = _precursor_score(state.precursors, state.problem.target_formula)
     condition = _condition_score(state)
@@ -23,7 +24,8 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
     hazard = _hazard_score(state)
 
     total = (
-        1.2 * stoich
+        1.5 * validity
+        + 1.2 * stoich
         + 1.0 * precursor
         + 0.6 * thermo
         + 1.0 * retrieval
@@ -33,6 +35,8 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
         - 0.5 * hazard
         - 0.3 * complexity
     )
+    if not hard_checks.valid:
+        total -= 2.0 + 0.25 * len(hard_checks.blocking_flags)
 
     return PlannedRoute(
         target_formula=state.problem.target_formula,
@@ -41,7 +45,9 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
         operations=state.operations,
         evidence_dois=state.evidence_dois,
         analog_targets=state.analog_targets,
+        hard_checks=hard_checks,
         score=ScoreBreakdown(
+            validity=validity,
             stoich=stoich,
             precursor=precursor,
             thermo=thermo,
@@ -122,6 +128,10 @@ def _judge_route(state: PlanningState) -> JudgeResult:
     atmospheres = [op.atmosphere for op in heating if op.atmosphere]
 
     score = 0.6
+    if not state.precursors:
+        flags.append("missing_precursors")
+        notes.append("The route is missing explicit precursors.")
+        score -= 0.3
     if any("CO3" in formula or "NO3" in formula for formula in formulas):
         if temperatures and min(temperatures) < 600.0:
             flags.append("decomposition_risk")
@@ -136,7 +146,7 @@ def _judge_route(state: PlanningState) -> JudgeResult:
         notes.append("Air heating is a poor fit for oxygen-sensitive target chemistry.")
         score -= 0.2
 
-    if len(required_target_elements(state.problem.target_formula)) >= 3 and not any(operation.source_label == "anneal" for operation in state.operations):
+    if len(safe_required_target_elements(state.problem.target_formula)) >= 3 and not any(operation.source_label == "anneal" for operation in state.operations):
         flags.append("limited_diffusion_support")
         notes.append("Multicomponent solid-state targets often benefit from regrinding and a second heat treatment.")
         score -= 0.1

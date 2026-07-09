@@ -19,3 +19,4 @@ data/raw/*.xz
 data/raw/*.zip
 data/processed/
 planning_results/
+benchmark_results/

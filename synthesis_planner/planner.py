@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from .datasets import load_processed_routes, prepare_processed_data
-from .formula import infer_target_class, parse_formula
+from .formula import safe_element_set, safe_infer_target_class
 from .mcts import MonteCarloTreeSearch
 from .retrieval import RetrievalIndex
 from .schema import PlannedRoute, PlanningProblem, PlanningState
@@ -36,14 +36,34 @@ class SynthesisPlanner:
     ) -> list[PlannedRoute]:
         self.ensure_processed_data()
         routes = load_processed_routes(self.processed_dir, problem.modality)
+        return self.plan_with_routes(
+            problem,
+            routes,
+            iterations=iterations,
+            top_k=top_k,
+            exploration_constant=exploration_constant,
+            rollout_count=rollout_count,
+            seed=seed,
+        )
+
+    def plan_with_routes(
+        self,
+        problem: PlanningProblem,
+        routes,
+        iterations: int = 250,
+        top_k: int = 5,
+        exploration_constant: float = 1.4,
+        rollout_count: int = 8,
+        seed: int | None = None,
+    ) -> list[PlannedRoute]:
         retrieval = RetrievalIndex(routes)
         analogs = retrieval.retrieve(problem.target_formula, top_k=12)
         candidate_precursor_sets = retrieval.candidate_precursor_sets(problem.target_formula, analogs, max_sets=12)
 
         root_state = PlanningState(
             problem=problem,
-            target_elements=tuple(sorted(parse_formula(problem.target_formula))),
-            target_class=infer_target_class(problem.target_formula),
+            target_elements=tuple(sorted(safe_element_set(problem.target_formula))),
+            target_class=safe_infer_target_class(problem.target_formula),
         )
         mcts = MonteCarloTreeSearch(
             exploration_constant=exploration_constant,

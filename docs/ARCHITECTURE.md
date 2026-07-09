@@ -10,6 +10,7 @@ The repo currently implements the first executable stage of the proposal:
 - generate candidate solid-state procedures with a staged grammar
 - score completed routes with hard-check style heuristics
 - rank routes with Monte Carlo Tree Search
+- generate retrospective benchmark splits and run evaluation summaries
 
 The planner is intentionally a solid-state baseline. Hydrothermal and precipitation records are normalized and stored, but they are not yet expanded into an executable search grammar.
 
@@ -34,10 +35,14 @@ All active source code now lives in `synthesis_planner/`.
   - staged solid-state action expansion
 - `scoring.py`
   - heuristic route evaluation and deterministic judge output
+- `constraints.py`
+  - hard validity checks and lab-constraint gating
 - `mcts.py`
   - compact PUCT-style tree search
 - `planner.py`
   - top-level orchestration and portfolio selection
+- `benchmark.py`
+  - split generation and retrospective evaluation metrics
 
 ## Planning pipeline
 
@@ -51,15 +56,17 @@ All active source code now lives in `synthesis_planner/`.
    - choose preparation steps
    - choose heating schedule
    - finalize route
-7. Rollouts complete partial routes and score them.
-8. A small diverse top-k portfolio is written to `planning_results/`.
+7. Hard constraints gate route validity and emit explicit blocking flags.
+8. Rollouts complete partial routes and score them.
+9. A small diverse top-k portfolio is written to `planning_results/`.
+10. Optional benchmark tooling evaluates held-out targets under split strategies such as target-formula and chemical-system splits.
 
 ## Intentional simplifications
 
 - No live LLM calls: the judge is deterministic and rubric-based.
 - No live thermodynamics APIs: route scoring is heuristic.
 - No multimodal branching yet: only `solid_state` is currently planned end to end.
-- No benchmark harness yet beyond the unit suite and smoke-test workflow.
+- Benchmarking is still lightweight relative to the full proposal: it provides split generation and a small retrospective metric set, not the complete baseline/ablation framework yet.
 
 ## Repo cleanup
 
