@@ -52,8 +52,8 @@ The current normalization step is conservative:
 
 ## Current use
 
-- `solid_state_routes.jsonl` is used directly by the current planner.
-- `solution_routes.jsonl` is prepared now so hydrothermal and precipitation planning can be added without revisiting the ingestion layer.
+- `solid_state_routes.jsonl` is used by the `solid_state` planner and by the current retrospective benchmarking commands.
+- `solution_routes.jsonl` is used directly by the `hydrothermal` and `precipitation` planners.
 
 ## Benchmark splits
 
@@ -66,3 +66,16 @@ The current benchmark utilities build retrospective splits from processed solid-
 - `publication_year`
 
 The publication-year split is heuristic and depends on whether a plausible year can be extracted from the DOI string.
+
+## Baselines and ablations
+
+The current benchmark runner supports:
+
+- `mcts`
+- `nearest_neighbor`
+- `frequency_prior`
+- `mcts_no_retrieval`
+- `mcts_no_judge`
+- `mcts_no_hard_checks`
+
+These are intended as proposal-aligned baseline and ablation scaffolds rather than final benchmark methodology.

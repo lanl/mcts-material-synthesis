@@ -6,7 +6,7 @@ import math
 import random
 
 from .grammar import apply_action, expand_state, rollout_completion
-from .schema import Action, PlanningState
+from .schema import Action, EvaluationConfig, PlanningState
 from .scoring import evaluate_state
 
 
@@ -29,10 +29,17 @@ class TreeNode:
 
 
 class MonteCarloTreeSearch:
-    def __init__(self, exploration_constant: float = 1.4, rollout_count: int = 8, seed: int | None = None):
+    def __init__(
+        self,
+        exploration_constant: float = 1.4,
+        rollout_count: int = 8,
+        seed: int | None = None,
+        evaluation_config: EvaluationConfig | None = None,
+    ):
         self.exploration_constant = exploration_constant
         self.rollout_count = rollout_count
         self.rng = random.Random(seed)
+        self.evaluation_config = evaluation_config or EvaluationConfig()
 
     def run(self, root_state: PlanningState, analogs, candidate_precursor_sets, iterations: int):
         root = TreeNode(root_state)
@@ -69,7 +76,7 @@ class MonteCarloTreeSearch:
         best_value = float("-inf")
         for _ in range(self.rollout_count):
             terminal_state = rollout_completion(state, analogs, candidate_precursor_sets, self.rng)
-            route = evaluate_state(terminal_state, analogs)
+            route = evaluate_state(terminal_state, analogs, self.evaluation_config)
             if route.mcts_value > best_value:
                 best_value = route.mcts_value
                 best_route = route

@@ -50,6 +50,7 @@ class RouteRecord:
     chemical_system: str
     target_class: str
     precursors: tuple[PrecursorRecord, ...]
+    solvents: tuple[str, ...]
     operations: tuple[OperationRecord, ...]
     reaction_string: str
     paragraph_excerpt: str
@@ -83,6 +84,48 @@ class JudgeResult:
     score: float
     notes: tuple[str, ...]
     flags: tuple[str, ...]
+    evidence_dois: tuple[str, ...] = field(default_factory=tuple)
+    rubric_scores: dict[str, float] = field(default_factory=dict)
+    uncertainty: float = 0.0
+
+
+@dataclass(frozen=True)
+class BalancedSpecies:
+    formula: str
+    coefficient: float
+
+
+@dataclass(frozen=True)
+class ReactionBalanceResult:
+    feasible: bool
+    framework_match_fraction: float
+    precursor_coefficients: tuple[float, ...]
+    environmental_reactants: tuple[BalancedSpecies, ...] = field(default_factory=tuple)
+    byproducts: tuple[BalancedSpecies, ...] = field(default_factory=tuple)
+    unused_precursors: tuple[str, ...] = field(default_factory=tuple)
+    residual_elements: dict[str, float] = field(default_factory=dict)
+    equation: str | None = None
+
+
+@dataclass(frozen=True)
+class RedoxAnalysisResult:
+    target_charge: float | None
+    precursor_charge: float | None
+    required_direction: str
+    environment_support: str
+    notes: tuple[str, ...] = field(default_factory=tuple)
+    flags: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class ThermoAnalysisResult:
+    score: float
+    gas_release_moles: float
+    gas_uptake_moles: float
+    byproduct_count: int
+    decomposition_match: float
+    redox_match: float
+    notes: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -92,6 +135,8 @@ class HardCheckResult:
     notes: tuple[str, ...]
     coverage_fraction: float
     blocking_flags: tuple[str, ...]
+    reaction_balance: ReactionBalanceResult | None = None
+    redox: RedoxAnalysisResult | None = None
 
 
 @dataclass(frozen=True)
@@ -110,15 +155,25 @@ class ScoreBreakdown:
 
 
 @dataclass(frozen=True)
+class EvaluationConfig:
+    judge_name: str = "deterministic"
+    use_judge: bool = True
+    use_hard_checks: bool = True
+    judge_config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class PlannedRoute:
     target_formula: str
     modality: str
     precursors: tuple[PrecursorRecord, ...]
+    solvents: tuple[str, ...]
     operations: tuple[OperationRecord, ...]
     evidence_dois: tuple[str, ...]
     analog_targets: tuple[str, ...]
     hard_checks: HardCheckResult
     score: ScoreBreakdown
+    thermo: ThermoAnalysisResult
     judge: JudgeResult
     mcts_value: float
 
@@ -141,6 +196,7 @@ class PlanningState:
     target_class: str
     stage: str = "precursors"
     precursors: tuple[PrecursorRecord, ...] = field(default_factory=tuple)
+    solvents: tuple[str, ...] = field(default_factory=tuple)
     operations: tuple[OperationRecord, ...] = field(default_factory=tuple)
     evidence_dois: tuple[str, ...] = field(default_factory=tuple)
     analog_targets: tuple[str, ...] = field(default_factory=tuple)

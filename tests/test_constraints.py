@@ -61,3 +61,17 @@ def test_solution_only_operation_is_invalid_for_solid_state():
     result = evaluate_hard_constraints(state)
     assert not result.valid
     assert "modality_inconsistent_operations" in result.blocking_flags
+
+
+def test_redox_mismatch_is_blocking():
+    state = _state_for(
+        target_formula="FeO",
+        precursors=(PrecursorRecord("Fe2O3", "oxide", ("Fe", "O")),),
+        operations=(
+            OperationRecord("mix", source_label="mix"),
+            OperationRecord("heat", temperature_c=NumericRange(700.0, 700.0, "C"), atmosphere="air", source_label="anneal"),
+        ),
+    )
+    result = evaluate_hard_constraints(state)
+    assert not result.valid
+    assert "oxidizing_atmosphere_mismatch" in result.blocking_flags

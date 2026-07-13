@@ -1,4 +1,4 @@
-"""Benchmark split generation and retrospective evaluation."""
+"""Benchmark split generation, baselines, and retrospective evaluation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from statistics import mean
 from typing import Callable
 
 from .datasets import load_processed_routes
-from .formula import required_target_elements
 from .planner import SynthesisPlanner
 from .schema import PlannedRoute, PlanningProblem, RouteRecord
 
@@ -30,6 +29,7 @@ class BenchmarkCaseResult:
 
 @dataclass(frozen=True)
 class BenchmarkSummary:
+    method: str
     split_type: str
     n_train: int
     n_test: int
@@ -42,6 +42,7 @@ class BenchmarkSummary:
 
     def to_dict(self) -> dict:
         return {
+            "method": self.method,
             "split_type": self.split_type,
             "n_train": self.n_train,
             "n_test": self.n_test,
@@ -97,20 +98,28 @@ def evaluate_split(
     train_routes: list[RouteRecord],
     test_routes: list[RouteRecord],
     split_type: str,
+    method: str = "mcts",
+    modality: str = "solid_state",
     iterations: int = 50,
     top_k: int = 1,
     rollout_count: int = 3,
     seed: int | None = None,
+    judge_name: str = "deterministic",
+    judge_config: dict | None = None,
 ) -> BenchmarkSummary:
     cases = []
     for index, gold in enumerate(test_routes):
-        predictions = planner.plan_with_routes(
-            PlanningProblem(target_formula=gold.target_formula, modality="solid_state"),
+        predictions = _predict_with_method(
+            method,
+            planner,
+            PlanningProblem(target_formula=gold.target_formula, modality=modality),
             train_routes,
             iterations=iterations,
             top_k=top_k,
             rollout_count=rollout_count,
             seed=(seed or 0) + index,
+            judge_name=judge_name,
+            judge_config=judge_config,
         )
         if not predictions:
             continue
@@ -129,10 +138,11 @@ def evaluate_split(
         )
 
     if not cases:
-        return BenchmarkSummary(split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, [])
+        return BenchmarkSummary(method, split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, [])
 
     temp_errors = [case.temperature_error_c for case in cases if case.temperature_error_c is not None]
     return BenchmarkSummary(
+        method=method,
         split_type=split_type,
         n_train=len(train_routes),
         n_test=len(test_routes),
@@ -168,6 +178,43 @@ def save_split_manifest(train_routes: list[RouteRecord], test_routes: list[Route
 
 def load_solid_state_routes(processed_dir: str | Path) -> list[RouteRecord]:
     return load_processed_routes(processed_dir, "solid_state")
+
+
+def load_routes(processed_dir: str | Path, modality: str) -> list[RouteRecord]:
+    return load_processed_routes(processed_dir, modality)
+
+
+def evaluate_method_suite(
+    planner: SynthesisPlanner,
+    train_routes: list[RouteRecord],
+    test_routes: list[RouteRecord],
+    split_type: str,
+    methods: list[str],
+    modality: str = "solid_state",
+    iterations: int = 50,
+    top_k: int = 1,
+    rollout_count: int = 3,
+    seed: int | None = None,
+    judge_name: str = "deterministic",
+    judge_config: dict | None = None,
+) -> dict[str, dict]:
+    return {
+        method: evaluate_split(
+            planner,
+            train_routes,
+            test_routes,
+            split_type=split_type,
+            method=method,
+            modality=modality,
+            iterations=iterations,
+            top_k=top_k,
+            rollout_count=rollout_count,
+            seed=seed,
+            judge_name=judge_name,
+            judge_config=judge_config,
+        ).to_dict()
+        for method in methods
+    }
 
 
 def _split_key_fn(split_type: str) -> Callable[[RouteRecord], str | int | None]:
@@ -223,3 +270,59 @@ def _first_heating_temperature(operations) -> float | None:
         if operation.verb == "heat" and operation.temperature_c and operation.temperature_c.midpoint is not None:
             return operation.temperature_c.midpoint
     return None
+
+
+def _predict_with_method(
+    method: str,
+    planner: SynthesisPlanner,
+    problem: PlanningProblem,
+    train_routes: list[RouteRecord],
+    iterations: int,
+    top_k: int,
+    rollout_count: int,
+    seed: int,
+    judge_name: str,
+    judge_config: dict | None,
+) -> list[PlannedRoute]:
+    if method == "mcts":
+        return planner.plan_with_routes(
+            problem,
+            train_routes,
+            iterations=iterations,
+            top_k=top_k,
+            rollout_count=rollout_count,
+            seed=seed,
+            judge_name=judge_name,
+            judge_config=judge_config,
+        )
+    if method == "nearest_neighbor":
+        return planner.plan_nearest_neighbor(problem, train_routes, top_k=top_k, judge_name=judge_name, judge_config=judge_config)
+    if method == "frequency_prior":
+        return planner.plan_frequency_prior(problem, train_routes, top_k=top_k, judge_name=judge_name, judge_config=judge_config)
+    if method == "mcts_no_retrieval":
+        return planner.plan_with_routes(
+            problem,
+            train_routes,
+            iterations=iterations,
+            top_k=top_k,
+            rollout_count=rollout_count,
+            seed=seed,
+            judge_name=judge_name,
+            judge_config=judge_config,
+            use_retrieval=False,
+        )
+    if method == "mcts_no_judge":
+        return planner.plan_with_routes(problem, train_routes, iterations=iterations, top_k=top_k, rollout_count=rollout_count, seed=seed, use_judge=False, judge_name="none")
+    if method == "mcts_no_hard_checks":
+        return planner.plan_with_routes(
+            problem,
+            train_routes,
+            iterations=iterations,
+            top_k=top_k,
+            rollout_count=rollout_count,
+            seed=seed,
+            judge_name=judge_name,
+            judge_config=judge_config,
+            use_hard_checks=False,
+        )
+    raise ValueError(f"Unknown benchmark method: {method}")

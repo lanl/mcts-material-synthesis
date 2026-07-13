@@ -96,6 +96,7 @@ def normalize_solid_state_record(entry: dict, index: int) -> RouteRecord:
         chemical_system="-".join(target_elements),
         target_class=_infer_target_class(target_formula, target_elements),
         precursors=tuple(_normalize_precursor(precursor) for precursor in entry.get("precursors", [])),
+        solvents=tuple(),
         operations=tuple(_normalize_operation(operation) for operation in entry.get("operations", [])),
         reaction_string=entry.get("reaction_string", ""),
         paragraph_excerpt=entry.get("paragraph_string", ""),
@@ -117,6 +118,7 @@ def normalize_solution_record(entry: dict, index: int) -> RouteRecord:
         chemical_system="-".join(target_elements),
         target_class=_infer_target_class(target_formula, target_elements),
         precursors=tuple(_normalize_precursor(precursor) for precursor in entry.get("precursors", [])),
+        solvents=tuple(entry.get("solvents_string", []) or ()),
         operations=tuple(_normalize_operation(operation) for operation in entry.get("operations", [])),
         reaction_string=entry.get("reaction_string", ""),
         paragraph_excerpt=entry.get("paragraph_string", ""),
@@ -279,6 +281,7 @@ def _route_from_dict(payload: dict) -> RouteRecord:
         chemical_system=payload.get("chemical_system", "-".join(target_elements)),
         target_class=payload["target_class"],
         precursors=tuple(PrecursorRecord(**precursor) for precursor in payload["precursors"]),
+        solvents=tuple(payload.get("solvents", [])),
         operations=tuple(
             OperationRecord(
                 verb=operation["verb"],

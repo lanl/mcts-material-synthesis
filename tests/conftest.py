@@ -103,6 +103,25 @@ def sample_raw_data(tmp_path: Path) -> Path:
             ],
             "quantities": [],
             "type": "hydrothermal",
+        },
+        {
+            "doi": "10.1016/j.solution.2021.04.004",
+            "paragraph_string": "A precipitation TiO2 route.",
+            "reaction": {"left_side": ["TiCl4"], "right_side": ["TiO2"]},
+            "reaction_string": "TiCl4 -> TiO2",
+            "target": {"material_formula": "TiO2"},
+            "targets_string": ["TiO2"],
+            "precursors": [
+                {"material_formula": "TiCl4", "composition": [{"elements": {"Ti": "1", "Cl": "4"}}]},
+            ],
+            "solvents_string": ["water", "ethanol"],
+            "operations": [
+                {"type": "MixingOperation", "string": "mixed", "conditions": {}},
+                {"type": "PurificationOperation", "string": "washed", "conditions": {}},
+                {"type": "DryingOperation", "string": "dried", "conditions": {}},
+            ],
+            "quantities": [],
+            "type": "precipitation",
         }
     ]
 

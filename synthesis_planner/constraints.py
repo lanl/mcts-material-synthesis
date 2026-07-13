@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from .formula import parse_formula, safe_required_target_elements
+from .chemistry import analyze_redox, balance_route
+from .formula import safe_required_target_elements
 from .schema import HardCheckResult, PlanningState
 
-ALLOWED_VOLATILE_EXTRAS = {"H", "C", "N", "Cl", "Br", "I", "F"}
-SOLUTION_ONLY_VERBS = {"wash", "centrifuge", "precipitate", "hydrothermal_hold", "ph_adjust"}
-OXIDIZING_ATMOSPHERES = {"air", "oxygen", "o2"}
+SOLUTION_ONLY_VERBS = {"wash", "centrifuge", "precipitate", "hydrothermal_hold", "ph_adjust", "age"}
 
 
 def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
@@ -42,13 +41,15 @@ def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
             notes.append("Solution-only operations appeared in a solid-state route.")
             blocking.append("modality_inconsistent_operations")
 
-    heating = [operation for operation in state.operations if operation.verb == "heat"]
-    if not heating:
+    thermal_operations = [
+        operation for operation in state.operations if operation.verb in {"heat", "hydrothermal_hold", "calcine", "anneal"}
+    ]
+    if state.problem.modality in {"solid_state", "hydrothermal"} and not thermal_operations:
         flags.append("missing_heat_step")
-        notes.append("Solid-state routes require at least one heat step.")
+        notes.append(f"{state.problem.modality.replace('_', ' ').title()} routes require at least one heat step.")
         blocking.append("missing_heat_step")
 
-    if len(heating) > state.problem.lab_constraints.max_heating_steps:
+    if len(thermal_operations) > state.problem.lab_constraints.max_heating_steps:
         flags.append("too_many_heating_steps")
         notes.append("The route exceeds the configured maximum number of heating steps.")
         blocking.append("too_many_heating_steps")
@@ -58,8 +59,13 @@ def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
         notes.append("Lab constraints require an explicit mixing or grinding step.")
         blocking.append("missing_mixing")
 
+    if state.problem.modality in {"hydrothermal", "precipitation"} and not state.solvents:
+        flags.append("missing_solvent")
+        notes.append("Solution-phase routes require an explicit solvent choice.")
+        blocking.append("missing_solvent")
+
     allowed_atmospheres = {atm.lower() for atm in state.problem.lab_constraints.allowed_atmospheres}
-    for operation in heating:
+    for operation in thermal_operations:
         if operation.temperature_c and operation.temperature_c.midpoint is not None:
             temp = operation.temperature_c.midpoint
             if state.problem.lab_constraints.min_temperature_c is not None and temp < state.problem.lab_constraints.min_temperature_c:
@@ -70,6 +76,10 @@ def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
                 flags.append("temperature_above_constraint")
                 notes.append("A heating step exceeds the allowed temperature range.")
                 blocking.append("temperature_above_constraint")
+            if state.problem.modality == "hydrothermal" and temp > 350.0:
+                flags.append("hydrothermal_temperature_too_high")
+                notes.append("Hydrothermal temperatures above 350 C are implausible for standard autoclave routes.")
+                blocking.append("hydrothermal_temperature_too_high")
         if allowed_atmospheres and operation.atmosphere:
             parts = {part.strip().lower() for part in operation.atmosphere.split(",") if part.strip()}
             if not parts:
@@ -79,37 +89,36 @@ def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
                 notes.append("A heating step uses an atmosphere outside the declared lab constraints.")
                 blocking.append("disallowed_atmosphere")
 
-    target_formula_counts = _safe_counts(state.problem.target_formula)
-    precursor_counts = {}
-    for precursor in state.precursors:
-        for element, amount in _safe_counts(precursor.formula).items():
-            precursor_counts[element] = precursor_counts.get(element, 0.0) + amount
+    balance = balance_route(state)
+    if not balance.feasible:
+        flags.append("stoichiometric_imbalance")
+        notes.append("The precursor set could not be balanced to the target with common volatile products/reactants.")
+        blocking.append("stoichiometric_imbalance")
+        if balance.residual_elements:
+            residual = ", ".join(f"{element}:{amount:.3g}" for element, amount in sorted(balance.residual_elements.items()))
+            notes.append(f"Residual unmatched elements remain after balancing: {residual}.")
+    if balance.unused_precursors:
+        flags.append("unused_precursor")
+        notes.append("At least one selected precursor does not participate in the balanced reaction stoichiometry.")
 
-    non_target_extras = set(precursor_counts) - set(target_formula_counts)
-    problematic_extras = non_target_extras - ALLOWED_VOLATILE_EXTRAS
-    if problematic_extras:
-        flags.append("nonvolatile_extra_elements")
-        notes.append(
-            "Precursors introduce non-target elements without a supported byproduct assumption: "
-            + ",".join(sorted(problematic_extras))
-            + "."
-        )
-        blocking.append("nonvolatile_extra_elements")
+    redox = analyze_redox(state, balance)
+    if redox.flags:
+        flags.extend(redox.flags)
+        notes.extend(redox.notes)
+    for flag in redox.flags:
+        if flag in {"missing_oxidant", "missing_reductant", "oxidizing_atmosphere_mismatch", "reducing_atmosphere_mismatch"}:
+            blocking.append(flag)
 
-    if "O" in target_formula_counts:
-        has_oxygen_in_precursors = "O" in precursor_counts
-        atmospheres = {operation.atmosphere.lower() for operation in heating if operation.atmosphere}
-        if not has_oxygen_in_precursors and not (atmospheres & OXIDIZING_ATMOSPHERES):
-            flags.append("missing_oxygen_source")
-            notes.append("An oxide target is missing an obvious oxygen source or oxidizing atmosphere.")
-            blocking.append("missing_oxygen_source")
-
-    if _target_contains(state.problem.target_formula, {"S", "N"}):
-        atmospheres = {operation.atmosphere.lower() for operation in heating if operation.atmosphere}
-        if atmospheres & OXIDIZING_ATMOSPHERES:
-            flags.append("oxidizing_atmosphere_mismatch")
-            notes.append("Oxygen-sensitive target chemistry is paired with an oxidizing atmosphere.")
-            blocking.append("oxidizing_atmosphere_mismatch")
+    if state.problem.modality == "precipitation":
+        verbs = {operation.verb for operation in state.operations}
+        if "precipitate" not in verbs:
+            flags.append("missing_precipitation_step")
+            notes.append("Precipitation routes require an explicit precipitation step.")
+            blocking.append("missing_precipitation_step")
+        if "wash" not in verbs or "dry" not in verbs:
+            flags.append("incomplete_postprocessing")
+            notes.append("Precipitation routes generally require wash and dry post-processing.")
+            blocking.append("incomplete_postprocessing")
 
     return HardCheckResult(
         valid=not blocking,
@@ -117,22 +126,9 @@ def evaluate_hard_constraints(state: PlanningState) -> HardCheckResult:
         notes=tuple(_dedupe(notes)),
         coverage_fraction=coverage_fraction,
         blocking_flags=tuple(_dedupe(blocking)),
+        reaction_balance=balance,
+        redox=redox,
     )
-
-
-def _safe_counts(formula: str) -> dict[str, float]:
-    try:
-        return parse_formula(formula)
-    except Exception:
-        return {element: 1.0 for element in safe_required_target_elements(formula)} if formula else {}
-
-
-def _target_contains(formula: str, elements: set[str]) -> bool:
-    try:
-        counts = parse_formula(formula)
-        return any(element in counts for element in elements)
-    except Exception:
-        return any(element in formula for element in elements)
 
 
 def _dedupe(items):

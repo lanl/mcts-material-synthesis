@@ -26,3 +26,21 @@ def test_benchmark_returns_metrics(processed_data, sample_raw_data):
     assert summary.n_train >= 1
     assert summary.n_test >= 1
     assert 0.0 <= summary.top1_validity_rate <= 1.0
+
+
+def test_nearest_neighbor_baseline_runs(processed_data, sample_raw_data):
+    routes = load_processed_routes(processed_data, "solid_state")
+    planner = SynthesisPlanner(sample_raw_data, processed_data)
+    train_routes, test_routes = build_split(routes, "random", test_fraction=0.5, seed=1)
+    summary = evaluate_split(
+        planner,
+        train_routes,
+        test_routes,
+        split_type="random",
+        method="nearest_neighbor",
+        iterations=5,
+        top_k=1,
+        rollout_count=1,
+        seed=3,
+    )
+    assert summary.method == "nearest_neighbor"

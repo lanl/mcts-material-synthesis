@@ -19,6 +19,9 @@ def test_evaluate_state_rewards_complete_oxide_route(processed_data):
     route = evaluate_state(state, [])
     assert route.score.stoich == 1.0
     assert route.score.precursor > 0.0
+    assert route.thermo.score > 0.0
+    assert route.hard_checks.reaction_balance is not None
+    assert route.hard_checks.reaction_balance.feasible
 
 
 def test_judge_flags_low_temperature_decomposition_risk():
