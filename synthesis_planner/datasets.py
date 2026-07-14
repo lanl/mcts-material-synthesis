@@ -89,11 +89,14 @@ def normalize_solid_state_record(entry: dict, index: int) -> RouteRecord:
     return RouteRecord(
         route_id=f"solid-state-{index}",
         source_doi=entry.get("doi", ""),
+        publication_year=_extract_publication_year(entry.get("doi", "")),
         modality="solid_state",
         target_formula=target_formula,
         target_elements=target_elements,
+        chemical_system="-".join(target_elements),
         target_class=_infer_target_class(target_formula, target_elements),
         precursors=tuple(_normalize_precursor(precursor) for precursor in entry.get("precursors", [])),
+        solvents=tuple(),
         operations=tuple(_normalize_operation(operation) for operation in entry.get("operations", [])),
         reaction_string=entry.get("reaction_string", ""),
         paragraph_excerpt=entry.get("paragraph_string", ""),
@@ -108,11 +111,14 @@ def normalize_solution_record(entry: dict, index: int) -> RouteRecord:
     return RouteRecord(
         route_id=f"solution-{index}",
         source_doi=entry.get("doi", ""),
+        publication_year=_extract_publication_year(entry.get("doi", "")),
         modality=modality,
         target_formula=target_formula,
         target_elements=target_elements,
+        chemical_system="-".join(target_elements),
         target_class=_infer_target_class(target_formula, target_elements),
         precursors=tuple(_normalize_precursor(precursor) for precursor in entry.get("precursors", [])),
+        solvents=tuple(entry.get("solvents_string", []) or ()),
         operations=tuple(_normalize_operation(operation) for operation in entry.get("operations", [])),
         reaction_string=entry.get("reaction_string", ""),
         paragraph_excerpt=entry.get("paragraph_string", ""),
@@ -263,14 +269,19 @@ def _write_jsonl(path: Path, routes: Iterable[RouteRecord]) -> None:
 
 
 def _route_from_dict(payload: dict) -> RouteRecord:
+    target_elements = tuple(payload["target_elements"])
+    source_doi = payload["source_doi"]
     return RouteRecord(
         route_id=payload["route_id"],
-        source_doi=payload["source_doi"],
+        source_doi=source_doi,
+        publication_year=payload.get("publication_year", _extract_publication_year(source_doi)),
         modality=payload["modality"],
         target_formula=payload["target_formula"],
-        target_elements=tuple(payload["target_elements"]),
+        target_elements=target_elements,
+        chemical_system=payload.get("chemical_system", "-".join(target_elements)),
         target_class=payload["target_class"],
         precursors=tuple(PrecursorRecord(**precursor) for precursor in payload["precursors"]),
+        solvents=tuple(payload.get("solvents", [])),
         operations=tuple(
             OperationRecord(
                 verb=operation["verb"],
@@ -285,3 +296,14 @@ def _route_from_dict(payload: dict) -> RouteRecord:
         paragraph_excerpt=payload["paragraph_excerpt"],
         source_dataset=payload["source_dataset"],
     )
+
+
+def _extract_publication_year(doi: str) -> int | None:
+    if not doi:
+        return None
+    matches = re.findall(r"(19\d{2}|20\d{2})", doi)
+    for match in matches:
+        year = int(match)
+        if 1900 <= year <= 2035:
+            return year
+    return None

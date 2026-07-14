@@ -1,4 +1,4 @@
-"""Solid-state synthesis grammar for MCTS expansion."""
+"""Modality-aware synthesis grammar for MCTS expansion."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ from .schema import Action, OperationRecord, PlanningState, PrecursorRecord, Rou
 
 
 def expand_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]]) -> list[Action]:
+    if state.problem.modality in {"hydrothermal", "precipitation"}:
+        return _expand_solution_state(state, analogs, candidate_precursor_sets)
+
     if state.stage == "precursors":
         return [
             Action(
@@ -41,6 +44,9 @@ def expand_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]],
 
 
 def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float, RouteRecord]]) -> PlanningState:
+    if state.problem.modality in {"hydrothermal", "precipitation"}:
+        return _apply_solution_action(state, action, analogs)
+
     if action.kind == "set_precursors":
         top_dois = tuple(route.source_doi for _, route in analogs[:5] if route.source_doi)
         top_targets = tuple(route.target_formula for _, route in analogs[:5])
@@ -50,6 +56,7 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
             target_class=state.target_class,
             stage="preparation",
             precursors=tuple(action.payload),
+            solvents=state.solvents,
             operations=state.operations,
             evidence_dois=top_dois,
             analog_targets=top_targets,
@@ -62,6 +69,7 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
             target_class=state.target_class,
             stage="heating",
             precursors=state.precursors,
+            solvents=state.solvents,
             operations=state.operations + tuple(action.payload),
             evidence_dois=state.evidence_dois,
             analog_targets=state.analog_targets,
@@ -74,6 +82,7 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
             target_class=state.target_class,
             stage="finalize",
             precursors=state.precursors,
+            solvents=state.solvents,
             operations=state.operations + tuple(action.payload),
             evidence_dois=state.evidence_dois,
             analog_targets=state.analog_targets,
@@ -86,6 +95,7 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
             target_class=state.target_class,
             stage="terminal",
             precursors=state.precursors,
+            solvents=state.solvents,
             operations=state.operations + tuple(action.payload),
             evidence_dois=state.evidence_dois,
             analog_targets=state.analog_targets,
@@ -185,3 +195,220 @@ def _range(midpoint: float, units: str = "C"):
     from .schema import NumericRange
 
     return NumericRange(midpoint, midpoint, units)
+
+
+def _expand_solution_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]]) -> list[Action]:
+    if state.stage == "precursors":
+        return [
+            Action(
+                kind="set_precursors",
+                label=", ".join(precursor.formula for precursor in precursors),
+                prior=max(0.1, float(score)),
+                payload=precursors,
+            )
+            for score, precursors in candidate_precursor_sets
+        ]
+    if state.stage == "solution_setup":
+        return _solution_setup_actions(state.problem.modality, analogs)
+    if state.stage == "reaction":
+        return _solution_reaction_actions(state.problem.modality, analogs)
+    if state.stage == "postprocess":
+        return _solution_postprocess_actions(state.problem.modality, analogs)
+    if state.stage == "finalize":
+        return [
+            Action("finalize", "terminate", 1.0, ()),
+            Action("finalize", "cool -> terminate", 0.4, (OperationRecord(verb="cool", source_label="cool"),)),
+        ]
+    return []
+
+
+def _apply_solution_action(state: PlanningState, action: Action, analogs: list[tuple[float, RouteRecord]]) -> PlanningState:
+    if action.kind == "set_precursors":
+        top_dois = tuple(route.source_doi for _, route in analogs[:5] if route.source_doi)
+        top_targets = tuple(route.target_formula for _, route in analogs[:5])
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="solution_setup",
+            precursors=tuple(action.payload),
+            solvents=state.solvents,
+            operations=state.operations,
+            evidence_dois=top_dois,
+            analog_targets=top_targets,
+        )
+    if action.kind == "set_solution_setup":
+        payload = action.payload
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="reaction",
+            precursors=state.precursors,
+            solvents=tuple(payload["solvents"]),
+            operations=state.operations + tuple(payload["operations"]),
+            evidence_dois=state.evidence_dois,
+            analog_targets=state.analog_targets,
+        )
+    if action.kind == "set_solution_reaction":
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="postprocess",
+            precursors=state.precursors,
+            solvents=state.solvents,
+            operations=state.operations + tuple(action.payload),
+            evidence_dois=state.evidence_dois,
+            analog_targets=state.analog_targets,
+        )
+    if action.kind == "set_solution_postprocess":
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="finalize",
+            precursors=state.precursors,
+            solvents=state.solvents,
+            operations=state.operations + tuple(action.payload),
+            evidence_dois=state.evidence_dois,
+            analog_targets=state.analog_targets,
+        )
+    if action.kind == "finalize":
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="terminal",
+            precursors=state.precursors,
+            solvents=state.solvents,
+            operations=state.operations + tuple(action.payload),
+            evidence_dois=state.evidence_dois,
+            analog_targets=state.analog_targets,
+        )
+    raise ValueError(f"Unknown action kind: {action.kind}")
+
+
+def _solution_setup_actions(modality: str, analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
+    solvent_counter = Counter()
+    for _, route in analogs:
+        for solvent in route.solvents:
+            solvent_counter[solvent.lower()] += 1
+    common = [name for name, _ in solvent_counter.most_common(3)]
+    if not common:
+        common = ["water", "ethanol", "water,ethanol"]
+    actions = []
+    for idx, solvent in enumerate(common):
+        actions.append(
+            Action(
+                kind="set_solution_setup",
+                label=f"{solvent} solution",
+                prior=max(0.4, 1.0 - 0.15 * idx),
+                payload={
+                    "solvents": tuple(part.strip() for part in solvent.split(",") if part.strip()),
+                    "operations": (OperationRecord(verb="mix", source_label=f"dissolve in {solvent}"),),
+                },
+            )
+        )
+    return actions
+
+
+def _solution_reaction_actions(modality: str, analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
+    heating_temps = []
+    heating_times = []
+    for _, route in analogs:
+        for operation in route.operations:
+            if operation.verb == "heat":
+                if operation.temperature_c and operation.temperature_c.midpoint is not None:
+                    heating_temps.append(operation.temperature_c.midpoint)
+                if operation.time_h and operation.time_h.midpoint is not None:
+                    heating_times.append(operation.time_h.midpoint)
+
+    if modality == "hydrothermal":
+        temp = round(median(heating_temps), 1) if heating_temps else 180.0
+        dwell = round(median(heating_times), 1) if heating_times else 12.0
+        return [
+            Action(
+                kind="set_solution_reaction",
+                label="hydrothermal hold",
+                prior=1.0,
+                payload=(
+                    OperationRecord(
+                        verb="heat",
+                        temperature_c=_range(min(max(temp, 100.0), 250.0)),
+                        time_h=_range(min(max(dwell, 4.0), 48.0), units="h"),
+                        atmosphere="sealed",
+                        source_label="hydrothermal hold",
+                    ),
+                ),
+            )
+        ]
+
+    return [
+        Action(
+            kind="set_solution_reaction",
+            label="precipitate and age",
+            prior=1.0,
+            payload=(
+                OperationRecord(verb="precipitate", source_label="precipitate"),
+                OperationRecord(verb="age", time_h=_range(2.0, units="h"), source_label="age"),
+            ),
+        ),
+        Action(
+            kind="set_solution_reaction",
+            label="precipitate only",
+            prior=0.7,
+            payload=(OperationRecord(verb="precipitate", source_label="precipitate"),),
+        ),
+    ]
+
+
+def _solution_postprocess_actions(modality: str, analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
+    base = [
+        Action(
+            kind="set_solution_postprocess",
+            label="wash -> dry",
+            prior=1.0,
+            payload=(
+                OperationRecord(verb="wash", source_label="wash"),
+                OperationRecord(verb="dry", source_label="dry"),
+            ),
+        )
+    ]
+    if modality == "hydrothermal":
+        base.append(
+            Action(
+                kind="set_solution_postprocess",
+                label="wash -> dry -> anneal",
+                prior=0.7,
+                payload=(
+                    OperationRecord(verb="wash", source_label="wash"),
+                    OperationRecord(verb="dry", source_label="dry"),
+                    OperationRecord(
+                        verb="heat",
+                        temperature_c=_range(400.0),
+                        time_h=_range(4.0, units="h"),
+                        source_label="post-anneal",
+                    ),
+                ),
+            )
+        )
+    else:
+        base.append(
+            Action(
+                kind="set_solution_postprocess",
+                label="wash -> dry -> calcine",
+                prior=0.75,
+                payload=(
+                    OperationRecord(verb="wash", source_label="wash"),
+                    OperationRecord(verb="dry", source_label="dry"),
+                    OperationRecord(
+                        verb="heat",
+                        temperature_c=_range(500.0),
+                        time_h=_range(3.0, units="h"),
+                        source_label="calcine",
+                    ),
+                ),
+            )
+        )
+    return base

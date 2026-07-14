@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from itertools import product
 
-from .formula import normalized_composition, parse_formula, required_target_elements
+from .formula import normalized_composition, safe_element_set, safe_infer_target_class, safe_required_target_elements
 from .schema import PrecursorRecord, RouteRecord
 
 
@@ -24,7 +24,7 @@ class RetrievalIndex:
                         self.class_usage_by_element[element][precursor.class_name] += 1
 
     def retrieve(self, target_formula: str, top_k: int = 12) -> list[tuple[float, RouteRecord]]:
-        target_elements = set(parse_formula(target_formula))
+        target_elements = safe_element_set(target_formula)
         target_class = _target_class_from_routes(self.routes, target_formula)
         target_comp = _safe_normalized_composition(target_formula, tuple(sorted(target_elements)))
 
@@ -43,14 +43,14 @@ class RetrievalIndex:
                 score += 5.0
             if route.target_class == target_class:
                 score += 1.0
-            if required_target_elements(target_formula) <= {element for precursor in route.precursors for element in precursor.elements}:
+            if safe_required_target_elements(target_formula) <= {element for precursor in route.precursors for element in precursor.elements}:
                 score += 0.5
             scored.append((score, route))
         scored.sort(key=lambda item: item[0], reverse=True)
         return scored[:top_k]
 
     def candidate_precursor_sets(self, target_formula: str, analogs: list[tuple[float, RouteRecord]], max_sets: int = 10) -> list[tuple[float, tuple[PrecursorRecord, ...]]]:
-        required = required_target_elements(target_formula)
+        required = safe_required_target_elements(target_formula)
         candidates: dict[tuple[str, ...], tuple[float, tuple[PrecursorRecord, ...]]] = {}
 
         for score, route in analogs:
@@ -66,7 +66,7 @@ class RetrievalIndex:
                 precursor = PrecursorRecord(
                     formula=formula,
                     class_name=_most_common_class(formula, analogs),
-                    elements=tuple(sorted(parse_formula(formula))),
+                    elements=tuple(sorted(safe_element_set(formula))),
                 )
                 options.append((count, precursor))
             if options:
@@ -94,9 +94,7 @@ def _target_class_from_routes(routes: list[RouteRecord], target_formula: str) ->
     for route in routes:
         if route.target_formula == target_formula:
             return route.target_class
-    from .formula import infer_target_class
-
-    return infer_target_class(target_formula)
+    return safe_infer_target_class(target_formula)
 
 
 def _most_common_class(formula: str, analogs: list[tuple[float, RouteRecord]]) -> str:

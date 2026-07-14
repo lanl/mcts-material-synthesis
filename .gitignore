@@ -1,5 +1,6 @@
 # Local config
 config.json
+config.py
 .env
 
 # Python
@@ -19,3 +20,4 @@ data/raw/*.xz
 data/raw/*.zip
 data/processed/
 planning_results/
+benchmark_results/

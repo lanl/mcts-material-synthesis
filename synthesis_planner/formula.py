@@ -116,3 +116,34 @@ def infer_target_class(formula: str) -> str:
     if "O" in elements:
         return "oxide"
     return "other"
+
+
+def safe_element_set(formula: str) -> set[str]:
+    try:
+        return set(parse_formula(formula))
+    except Exception:
+        tokens = re.findall(r"[A-Z][a-z]?", formula or "")
+        return set(tokens)
+
+
+def safe_required_target_elements(formula: str) -> set[str]:
+    elements = safe_element_set(formula)
+    return {element for element in elements if element not in {"O", "H"}}
+
+
+def safe_infer_target_class(formula: str) -> str:
+    try:
+        return infer_target_class(formula)
+    except Exception:
+        elements = safe_element_set(formula)
+        if "O" in elements and "P" in elements:
+            return "phosphate"
+        if "S" in elements and "O" not in elements:
+            return "sulfide"
+        if "N" in elements and "O" not in elements:
+            return "nitride"
+        if elements & {"F", "Cl", "Br", "I"}:
+            return "halide"
+        if "O" in elements:
+            return "oxide"
+        return "other"
