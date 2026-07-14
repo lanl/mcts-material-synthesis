@@ -20,6 +20,27 @@ class BaseJudge:
     def evaluate(self, state: PlanningState, analogs: list[tuple[float, RouteRecord]], hard_checks: HardCheckResult) -> JudgeResult:
         raise NotImplementedError
 
+    def evaluate_partial(self, state: PlanningState, analogs: list[tuple[float, RouteRecord]]) -> JudgeResult:
+        """
+        Evaluate incomplete route and flag likely missing steps.
+
+        Override in subclasses to provide stage-specific checks.
+        Default implementation returns neutral result.
+
+        Args:
+            state: Partial planning state
+            analogs: Retrieved analogous routes
+
+        Returns:
+            JudgeResult with flags for likely issues
+        """
+        return JudgeResult(
+            score=0.5,
+            notes=("Partial state evaluation not implemented for this judge.",),
+            flags=(),
+            uncertainty=0.5,
+        )
+
 
 class NullJudge(BaseJudge):
     name = "none"
@@ -118,6 +139,83 @@ class DeterministicJudge(BaseJudge):
             evidence_dois=evidence_dois,
             rubric_scores=rubric,
             uncertainty=uncertainty,
+        )
+
+    def evaluate_partial(self, state: PlanningState, analogs: list[tuple[float, RouteRecord]]) -> JudgeResult:
+        """
+        Evaluate incomplete route and flag likely missing steps.
+
+        Checks stage-specific issues:
+        - precursors: element coverage, oxidant/reductant needs
+        - preparation: mixing requirements
+        - heating: temperature sufficiency
+        """
+        notes = []
+        flags = []
+        score = 0.5
+
+        if state.stage == "precursors":
+            # After precursor selection, check coverage and redox needs
+            precursor_elements = set()
+            for p in state.precursors:
+                precursor_elements.update(p.elements)
+
+            target_elements = set(safe_required_target_elements(state.problem.target_formula))
+            if not target_elements.issubset(precursor_elements):
+                missing = target_elements - precursor_elements
+                flags.append("missing_element_source")
+                notes.append(f"Precursor set does not cover all target elements: {', '.join(missing)}")
+                score = 0.2
+
+            # Check for redox needs
+            if state.target_class in {"oxide", "sulfide", "nitride"}:
+                has_oxidant = any("NO3" in p.formula or "O" in p.elements for p in state.precursors)
+                if state.target_class == "oxide" and not has_oxidant:
+                    flags.append("potential_oxidant_need")
+                    notes.append("Oxide target may need oxidizing precursor or atmosphere.")
+                    score *= 0.8
+
+                if state.target_class in {"sulfide", "nitride"}:
+                    # Check for reducing environment need
+                    notes.append(f"{state.target_class.capitalize()} target likely needs reducing atmosphere or precursors.")
+
+        elif state.stage == "preparation":
+            # After preparation, check if operations are sufficient
+            ops = [operation.verb for operation in state.operations]
+            if "mix" not in ops and len(state.precursors) > 1:
+                flags.append("missing_mixing")
+                notes.append("Multiple precursors without mixing step.")
+                score = 0.4
+
+        elif state.stage == "heating":
+            # After heating, check for regrinding needs
+            if state.problem.modality == "solid_state":
+                ops = [operation.verb for operation in state.operations]
+                n_elements = len(safe_required_target_elements(state.problem.target_formula))
+
+                if n_elements >= 3 and not any("grind" in op.lower() or "mill" in op.lower() for op in ops):
+                    flags.append("potential_regrind_need")
+                    notes.append("Multicomponent solid-state route may benefit from regrinding.")
+                    score = 0.6
+
+        elif state.stage == "finalize":
+            # Check for modality-specific post-processing
+            if state.problem.modality in {"hydrothermal", "precipitation"}:
+                ops = [operation.verb for operation in state.operations]
+                if "wash" not in ops or "dry" not in ops:
+                    flags.append("incomplete_postprocessing")
+                    notes.append("Solution-based route typically needs wash and dry steps.")
+                    score = 0.5
+
+        if not flags:
+            notes.append("Partial route appears reasonable for current stage.")
+            score = 0.7
+
+        return JudgeResult(
+            score=score,
+            notes=tuple(notes),
+            flags=tuple(flags),
+            uncertainty=0.6,  # Partial states have higher uncertainty
         )
 
 
@@ -265,6 +363,16 @@ class OpenAICompatibleStructuredJudge(BaseJudge):
         return OpenAI(**client_kwargs)
 
     def _instructions(self) -> str:
+        # Check for prompt variant in config
+        variant = self.config.get("prompt_variant")
+        if variant and variant in EnsembleJudge.PROMPT_VARIANTS:
+            return EnsembleJudge.PROMPT_VARIANTS[variant] + (
+                " Review the proposed route using the supplied target, route chemistry, "
+                "hard-check analysis, and retrieved literature analogs. "
+                "Return valid JSON matching the schema exactly. "
+                "Use evidence_dois only from the retrieved analog list."
+            )
+
         return (
             "You are an inorganic materials synthesis judge. "
             "Review the proposed route using the supplied target, route chemistry, hard-check analysis, "
@@ -353,6 +461,8 @@ def build_judge(name: str, config: dict[str, Any] | None = None) -> BaseJudge:
         return DeterministicJudge(config)
     if name == "openai_structured":
         return OpenAICompatibleStructuredJudge(config)
+    if name == "ensemble":
+        return EnsembleJudge(config)
     raise ValueError(f"Unknown judge: {name}")
 
 
@@ -418,3 +528,145 @@ def _repair_json(candidate: str) -> str:
     repaired = re.sub(r'(\bnull|\btrue|\bfalse|\d|\]|\}|")\s*\n\s*(")', r'\1,\n  \2', repaired)
     repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
     return repaired
+
+
+class EnsembleJudge(BaseJudge):
+    """
+    Ensemble judge that evaluates routes with multiple prompt variants.
+
+    Uses disagreement across variants as an uncertainty proxy.
+    """
+    name = "ensemble"
+
+    PROMPT_VARIANTS = {
+        "conservative": (
+            "You are a skeptical materials chemist reviewing a synthesis route. "
+            "Identify potential failure modes and chemistry risks. "
+            "Penalize unsupported novelty heavily. "
+            "Default to uncertainty if evidence is weak. "
+            "Be conservative in your scoring."
+        ),
+        "optimistic": (
+            "You are an experienced synthesis chemist with practical lab intuition. "
+            "Recognize when routes are plausible even if not exact literature matches. "
+            "Give credit for reasonable adaptations and analogous chemistry. "
+            "Be optimistic about feasibility when the chemistry is sound."
+        ),
+        "skeptical": (
+            "You are an adversarial reviewer whose goal is to find flaws. "
+            "What could go wrong? What steps are missing? What assumptions are questionable? "
+            "Challenge the route's validity, completeness, and practicality. "
+            "Be skeptical about success unless strongly supported by evidence."
+        ),
+    }
+
+    def __init__(self, config: dict | None = None):
+        super().__init__(config)
+        self.num_variants = config.get("num_variants", 3) if config else 3
+
+        # Determine base judge type
+        base_judge_name = config.get("base_judge", "deterministic") if config else "deterministic"
+
+        if base_judge_name == "openai_structured":
+            # Create variant judges with different prompts
+            self.variant_judges = []
+            for variant_name in list(self.PROMPT_VARIANTS.keys())[:self.num_variants]:
+                variant_config = dict(config) if config else {}
+                variant_config["prompt_variant"] = variant_name
+                self.variant_judges.append(
+                    OpenAICompatibleStructuredJudge(variant_config)
+                )
+        else:
+            # For deterministic judge, create multiple instances with slight variations
+            # (they'll be identical, but we track them for consistency)
+            self.variant_judges = [
+                build_judge(base_judge_name, config)
+                for _ in range(self.num_variants)
+            ]
+
+    def evaluate(
+        self,
+        state: PlanningState,
+        analogs: list[tuple[float, RouteRecord]],
+        hard_checks: HardCheckResult
+    ) -> JudgeResult:
+        """
+        Evaluate route with multiple judge variants and compute uncertainty.
+
+        Returns ensemble mean with disagreement as uncertainty metric.
+        """
+        # Collect results from all variants
+        results = []
+        for judge in self.variant_judges:
+            try:
+                result = judge.evaluate(state, analogs, hard_checks)
+                results.append(result)
+            except Exception as e:
+                # If one variant fails, continue with others
+                print(f"Warning: Ensemble variant failed: {e}")
+                continue
+
+        if not results:
+            # All variants failed, return null result
+            return JudgeResult(
+                score=0.0,
+                notes=("All ensemble variants failed.",),
+                flags=("ensemble_failure",),
+                uncertainty=1.0,
+            )
+
+        # Compute ensemble statistics
+        scores = [r.score for r in results]
+        mean_score = sum(scores) / len(scores)
+
+        # Disagreement as uncertainty: max - min score
+        disagreement = max(scores) - min(scores) if len(scores) > 1 else 0.0
+
+        # Variance as additional uncertainty signal
+        variance = sum((s - mean_score) ** 2 for s in scores) / len(scores)
+        std_dev = variance ** 0.5
+
+        # Combined uncertainty (disagreement weighted more heavily)
+        uncertainty = min(1.0, 0.7 * disagreement + 0.3 * std_dev)
+
+        # Merge notes and flags from all variants
+        all_notes = []
+        all_flags = []
+        for result in results:
+            all_notes.extend(result.notes)
+            all_flags.extend(result.flags)
+
+        # Deduplicate while preserving order
+        seen_notes = set()
+        unique_notes = []
+        for note in all_notes:
+            if note not in seen_notes:
+                seen_notes.add(note)
+                unique_notes.append(note)
+
+        unique_flags = list(dict.fromkeys(all_flags))  # Deduplicate flags
+
+        # Merge evidence DOIs (take union)
+        all_dois = set()
+        for result in results:
+            all_dois.update(result.evidence_dois)
+
+        # Average rubric scores across variants
+        rubric_keys = set()
+        for result in results:
+            rubric_keys.update(result.rubric_scores.keys())
+
+        merged_rubric = {}
+        for key in rubric_keys:
+            values = [r.rubric_scores.get(key, 0.0) for r in results if key in r.rubric_scores]
+            if values:
+                merged_rubric[key] = sum(values) / len(values)
+
+        return JudgeResult(
+            score=mean_score,
+            notes=tuple(unique_notes[:10]),  # Limit to top 10 notes
+            flags=tuple(unique_flags),
+            evidence_dois=tuple(sorted(all_dois)),
+            rubric_scores=merged_rubric,
+            uncertainty=uncertainty,
+        )

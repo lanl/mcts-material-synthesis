@@ -181,6 +181,127 @@ def analyze_redox(state: PlanningState, balance: ReactionBalanceResult) -> Redox
     )
 
 
+def _compute_reaction_driving_force(
+    state: PlanningState,
+    balance: ReactionBalanceResult,
+    target_formation_energy: float,
+    mp_client
+) -> dict | None:
+    """
+    Compute reaction driving force (ΔH_rxn) using formation energies.
+
+    ΔH_rxn = (H_products + H_byproducts) - (H_precursors + H_env_reactants)
+
+    Args:
+        state: Planning state with precursors
+        balance: Balanced reaction result with coefficients
+        target_formation_energy: Formation energy of target (eV/atom)
+        mp_client: Materials Project client
+
+    Returns:
+        Dict with delta_h (total reaction enthalpy in eV) or None if calculation fails
+    """
+    try:
+        # Get formation energies for all precursors
+        precursor_energies = []
+        for precursor in state.precursors:
+            energy = mp_client.get_formation_energy(precursor.formula)
+            if energy is None:
+                # Can't compute without all precursor energies
+                return None
+            precursor_energies.append(energy)
+
+        # Get formation energies for byproducts (if any)
+        byproduct_energies = []
+        for byproduct in balance.byproducts:
+            energy = mp_client.get_formation_energy(byproduct.formula)
+            # Byproducts might not have formation energies (e.g., CO2, H2O)
+            # Use standard values if not in MP
+            if energy is None:
+                energy = _get_standard_formation_energy(byproduct.formula)
+            if energy is not None:
+                byproduct_energies.append((energy, byproduct.coefficient))
+
+        # Get formation energies for environmental reactants
+        env_reactant_energies = []
+        for reactant in balance.environmental_reactants:
+            energy = mp_client.get_formation_energy(reactant.formula)
+            if energy is None:
+                energy = _get_standard_formation_energy(reactant.formula)
+            if energy is not None:
+                env_reactant_energies.append((energy, reactant.coefficient))
+
+        # Count atoms in target to convert eV/atom to total eV
+        target_parsed = parse_formula(state.problem.target_formula)
+        if not target_parsed:
+            return None
+        target_n_atoms = sum(target_parsed.values())
+
+        # Count atoms in each precursor
+        precursor_n_atoms = []
+        for precursor in state.precursors:
+            parsed = parse_formula(precursor.formula)
+            if not parsed:
+                return None
+            precursor_n_atoms.append(sum(parsed.values()))
+
+        # Compute total energies (convert eV/atom to total eV using coefficients)
+        # Products
+        h_target = target_formation_energy * target_n_atoms  # eV
+        h_byproducts = sum(
+            energy * coeff for energy, coeff in byproduct_energies
+        )  # Already in eV (not eV/atom for molecules)
+
+        # Reactants
+        h_precursors = sum(
+            energy * n_atoms * coeff
+            for energy, n_atoms, coeff in zip(precursor_energies, precursor_n_atoms, balance.precursor_coefficients)
+        )
+        h_env_reactants = sum(
+            energy * coeff for energy, coeff in env_reactant_energies
+        )
+
+        # ΔH = products - reactants
+        delta_h = (h_target + h_byproducts) - (h_precursors + h_env_reactants)
+
+        return {
+            "delta_h": delta_h,
+            "h_target": h_target,
+            "h_precursors": h_precursors,
+            "h_byproducts": h_byproducts,
+            "h_env_reactants": h_env_reactants,
+        }
+
+    except Exception as e:
+        # Calculation failed, return None
+        return None
+
+
+def _get_standard_formation_energy(formula: str) -> float | None:
+    """
+    Get standard formation energy for common molecules.
+
+    Returns formation energy in eV (total, not per atom).
+    Values from NIST Chemistry WebBook.
+    """
+    # Standard formation energies at 298 K (converted from kJ/mol to eV)
+    STANDARD_FORMATION_ENERGIES = {
+        "H2O": -2.5,    # -241.8 kJ/mol ≈ -2.5 eV
+        "CO2": -4.1,    # -393.5 kJ/mol ≈ -4.1 eV
+        "NH3": -0.48,   # -46.1 kJ/mol ≈ -0.48 eV
+        "NO2": 0.35,    # +33.2 kJ/mol ≈ +0.35 eV
+        "NO": 0.94,     # +90.3 kJ/mol ≈ +0.94 eV
+        "N2": 0.0,      # Element reference state
+        "O2": 0.0,      # Element reference state
+        "H2": 0.0,      # Element reference state
+        "Cl2": 0.0,     # Element reference state
+        "HCl": -0.96,   # -92.3 kJ/mol ≈ -0.96 eV
+        "SO2": -3.1,    # -296.8 kJ/mol ≈ -3.1 eV
+    }
+
+    return STANDARD_FORMATION_ENERGIES.get(formula)
+
+
 def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult, redox: RedoxAnalysisResult, mp_client=None) -> ThermoAnalysisResult:
     notes = []
     if not balance.feasible:
@@ -267,15 +388,21 @@ def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult,
                         notes.append("Target is on the convex hull (thermodynamically stable).")
 
                 # Compute reaction driving force if formation energies available
-                if formation_energy is not None:
-                    # Simple estimate: assume precursor energies are zero baseline
-                    # Real implementation would get precursor formation energies
-                    reaction_driving_force = formation_energy  # Simplified
-                    is_exothermic = reaction_driving_force < 0
+                if formation_energy is not None and balance.feasible:
+                    driving_force_result = _compute_reaction_driving_force(
+                        state, balance, formation_energy, mp_client
+                    )
+                    if driving_force_result is not None:
+                        reaction_driving_force = driving_force_result["delta_h"]
+                        is_exothermic = reaction_driving_force < 0
 
-                    if is_exothermic:
-                        score *= 1.05
-                        notes.append(f"Reaction is exothermic (ΔH ≈ {reaction_driving_force:.2f} eV/atom).")
+                        if is_exothermic:
+                            score *= 1.05
+                            notes.append(f"Reaction is exothermic (ΔH = {reaction_driving_force:.2f} eV).")
+                        else:
+                            # Endothermic reactions may need higher temperatures
+                            score *= 0.95
+                            notes.append(f"Reaction is endothermic (ΔH = {reaction_driving_force:.2f} eV), may require elevated temperatures.")
 
                 # Warn about competing phases
                 if competing_phases:

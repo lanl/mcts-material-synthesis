@@ -166,6 +166,7 @@ class EvaluationConfig:
     judge_name: str = "deterministic"
     use_judge: bool = True
     use_hard_checks: bool = True
+    use_partial_judge: bool = False
     judge_config: dict[str, Any] = field(default_factory=dict)
 
 
