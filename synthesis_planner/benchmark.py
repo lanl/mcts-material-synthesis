@@ -61,6 +61,7 @@ class BenchmarkSummary:
     mean_operation_similarity: float
     mean_temperature_error_c: float | None
     mean_analog_support: float = 0.0
+    failure_taxonomy: dict = None
     cases: list[BenchmarkCaseResult] = None
 
     def to_dict(self) -> dict:
@@ -75,6 +76,7 @@ class BenchmarkSummary:
             "mean_operation_similarity": self.mean_operation_similarity,
             "mean_temperature_error_c": self.mean_temperature_error_c,
             "mean_analog_support": self.mean_analog_support,
+            "failure_taxonomy": self.failure_taxonomy if self.failure_taxonomy else {},
             "cases": [asdict(case) for case in self.cases] if self.cases else [],
         }
 
@@ -130,11 +132,16 @@ def evaluate_split(
     seed: int | None = None,
     judge_name: str = "deterministic",
     judge_config: dict | None = None,
+    enable_taxonomy: bool = True,
 ) -> BenchmarkSummary:
+    from .failure_taxonomy import analyze_failures, generate_taxonomy_report
     from .retrieval import RetrievalIndex
 
     retrieval = RetrievalIndex(train_routes)
     cases = []
+    planned_routes_dict = {}  # Store for failure analysis
+    test_routes_dict = {gold.route_id: gold for gold in test_routes}
+
     for index, gold in enumerate(test_routes):
         predictions = _predict_with_method(
             method,
@@ -151,6 +158,9 @@ def evaluate_split(
         if not predictions:
             continue
         top = predictions[0]
+
+        # Store for failure analysis
+        planned_routes_dict[gold.target_formula] = predictions
 
         # Retrieve analogs for this target
         analogs = retrieval.retrieve(gold.target_formula, top_k=12)
@@ -173,7 +183,14 @@ def evaluate_split(
         )
 
     if not cases:
-        return BenchmarkSummary(method, split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, 0.0, [])
+        return BenchmarkSummary(method, split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, 0.0, {}, [])
+
+    # Generate failure taxonomy
+    taxonomy_dict = {}
+    if enable_taxonomy:
+        failures = analyze_failures(cases, test_routes_dict, planned_routes_dict)
+        taxonomy = generate_taxonomy_report(failures)
+        taxonomy_dict = taxonomy.to_dict()
 
     temp_errors = [case.temperature_error_c for case in cases if case.temperature_error_c is not None]
     return BenchmarkSummary(
@@ -187,6 +204,7 @@ def evaluate_split(
         mean_operation_similarity=mean(case.operation_similarity for case in cases),
         mean_temperature_error_c=mean(temp_errors) if temp_errors else None,
         mean_analog_support=mean(case.analog_support_score for case in cases),
+        failure_taxonomy=taxonomy_dict,
         cases=cases,
     )
 

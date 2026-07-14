@@ -10,6 +10,7 @@ import sys
 
 from .benchmark import build_split, evaluate_method_suite, evaluate_split, load_routes, save_benchmark_summary, save_split_manifest
 from .datasets import download_public_datasets, prepare_processed_data
+from .judge_calibration import calibrate_judge, print_calibration_report
 from .materials_project import create_mp_client_from_config
 from .planner import SynthesisPlanner
 from .schema import LabConstraints, PlanningProblem
@@ -135,6 +136,20 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     benchmark.add_argument("--judge-base-url", default=judge_config.get("base_url"))
     benchmark.add_argument("--judge-api-style", choices=["auto", "responses", "chat_completions"], default=judge_config.get("api_style", "auto"))
     benchmark.add_argument("--output", default="benchmark_results/summary.json")
+
+    calibrate = subparsers.add_parser("calibrate-judge", help="Calibrate judge against held-out ground-truth routes")
+    calibrate.add_argument("--processed-dir", default=config.get("processed_dir", "data/processed"))
+    calibrate.add_argument("--modality", choices=["solid_state", "hydrothermal", "precipitation"], default="solid_state")
+    calibrate.add_argument("--judge", choices=["deterministic", "none", "openai_structured"], default=judge_config.get("name", "deterministic"))
+    calibrate.add_argument("--judge-model", default=judge_config.get("model"))
+    calibrate.add_argument("--judge-api-key", default=judge_config.get("api_key"))
+    calibrate.add_argument("--judge-base-url", default=judge_config.get("base_url"))
+    calibrate.add_argument("--judge-api-style", choices=["auto", "responses", "chat_completions"], default=judge_config.get("api_style", "auto"))
+    calibrate.add_argument("--split-type", choices=["random", "target_formula", "chemical_system"], default="target_formula")
+    calibrate.add_argument("--test-fraction", type=float, default=0.2)
+    calibrate.add_argument("--max-samples", type=int, default=100, help="Maximum test routes to evaluate")
+    calibrate.add_argument("--seed", type=int, default=config.get("seed"))
+    calibrate.add_argument("--output", default="calibration_report.json")
 
     return parser
 
@@ -262,6 +277,29 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mean_operation_similarity: {summary.mean_operation_similarity:.3f}")
         print(f"mean_temperature_error_c: {summary.mean_temperature_error_c}")
         print(f"saved: {output}")
+        return 0
+
+    if args.command == "calibrate-judge":
+        routes = load_routes(args.processed_dir, args.modality)
+        train_routes, test_routes = build_split(routes, args.split_type, test_fraction=args.test_fraction, seed=args.seed)
+
+        judge_config = _build_judge_config(args)
+        result = calibrate_judge(
+            judge_name=args.judge,
+            test_routes=test_routes,
+            train_routes=train_routes,
+            judge_config=judge_config,
+            max_samples=args.max_samples,
+        )
+
+        # Print human-readable report
+        print_calibration_report(result)
+
+        # Save JSON report
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(result.to_dict(), indent=2))
+        print(f"Report saved to: {output_path}")
         return 0
 
     return 1
