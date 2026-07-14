@@ -51,9 +51,12 @@ def test_plan_subcommand_parses_openai_judge_arguments():
             "test-key",
             "--judge-base-url",
             "https://api.openai.com/v1",
+            "--judge-api-style",
+            "chat_completions",
         ]
     )
     assert args.judge == "openai_structured"
     assert args.judge_model == "gpt-4o-mini"
     assert args.judge_api_key == "test-key"
     assert args.judge_base_url == "https://api.openai.com/v1"
+    assert args.judge_api_style == "chat_completions"

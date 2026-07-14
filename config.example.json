@@ -9,8 +9,9 @@
   "seed": 0,
   "judge": {
     "name": "openai_structured",
-    "model": "gpt-4o-mini",
+    "model": "gpt-oss-120b",
     "api_key": "paste-your-api-key-here",
-    "base_url": null
+    "base_url": "https://aiportal-api.aws.lanl.gov",
+    "api_style": "chat_completions"
   }
 }

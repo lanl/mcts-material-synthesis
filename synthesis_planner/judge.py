@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from .formula import safe_required_target_elements
@@ -154,7 +155,21 @@ class OpenAICompatibleStructuredJudge(BaseJudge):
     }
 
     def evaluate(self, state: PlanningState, analogs: list[tuple[float, RouteRecord]], hard_checks: HardCheckResult) -> JudgeResult:
-        payload = self._request_structured_judgment(state, analogs, hard_checks)
+        try:
+            payload = self._request_structured_judgment(state, analogs, hard_checks)
+        except Exception as exc:
+            fallback = DeterministicJudge(self.config).evaluate(state, analogs, hard_checks)
+            notes = list(fallback.notes)
+            notes.append(f"Model-backed judge fallback used after structured output failure: {type(exc).__name__}.")
+            flags = tuple(dict.fromkeys(fallback.flags + ("model_judge_fallback",)))
+            return JudgeResult(
+                score=fallback.score,
+                notes=tuple(notes),
+                flags=flags,
+                evidence_dois=fallback.evidence_dois,
+                rubric_scores=fallback.rubric_scores,
+                uncertainty=max(fallback.uncertainty, 0.6),
+            )
         return JudgeResult(
             score=_clamp(payload.get("score", 0.0)),
             notes=tuple(payload.get("notes", ())) or ("No model judge notes were returned.",),
@@ -172,6 +187,24 @@ class OpenAICompatibleStructuredJudge(BaseJudge):
     ) -> dict[str, Any]:
         client = self._build_client()
         model = self.config.get("model") or "gpt-4o-mini"
+        api_style = self.config.get("api_style", "auto")
+        payload = None
+
+        if api_style in {"responses", "auto"}:
+            try:
+                payload = self._request_via_responses(client, model, state, analogs, hard_checks)
+            except Exception:
+                if api_style != "auto":
+                    raise
+
+        if payload is None and api_style in {"chat_completions", "auto"}:
+            payload = self._request_via_chat_completions(client, model, state, analogs, hard_checks)
+
+        if not isinstance(payload, dict):
+            raise ValueError("Structured judge response was not a JSON object.")
+        return _normalize_judge_payload(payload)
+
+    def _request_via_responses(self, client, model: str, state: PlanningState, analogs, hard_checks: HardCheckResult) -> dict[str, Any]:
         response = client.responses.create(
             model=model,
             instructions=self._instructions(),
@@ -185,10 +218,30 @@ class OpenAICompatibleStructuredJudge(BaseJudge):
                 }
             },
         )
-        payload = json.loads(response.output_text)
-        if not isinstance(payload, dict):
-            raise ValueError("Structured judge response was not a JSON object.")
-        return payload
+        return json.loads(response.output_text)
+
+    def _request_via_chat_completions(self, client, model: str, state: PlanningState, analogs, hard_checks: HardCheckResult) -> dict[str, Any]:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": self._instructions() + " Return JSON only."},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "schema": self._schema,
+                            "route_context": self._build_context_payload(state, analogs, hard_checks),
+                        },
+                        indent=2,
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Chat completions judge returned empty content.")
+        return _parse_json_with_repair(content)
 
     def _build_client(self):
         try:
@@ -304,4 +357,64 @@ def build_judge(name: str, config: dict[str, Any] | None = None) -> BaseJudge:
 
 
 def _clamp(value: float) -> float:
+    if value is None:
+        return 0.0
     return max(0.0, min(float(value), 1.0))
+
+
+def _normalize_judge_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    rubric = payload.get("rubric_scores") or {}
+    notes = payload.get("notes") or []
+    flags = payload.get("flags") or []
+    evidence_dois = payload.get("evidence_dois") or []
+    if isinstance(notes, str):
+        notes = [notes]
+    if isinstance(flags, str):
+        flags = [flags]
+    if isinstance(evidence_dois, str):
+        evidence_dois = [evidence_dois]
+    return {
+        "score": _clamp(payload.get("score", 0.0)),
+        "notes": [str(item) for item in notes],
+        "flags": [str(item) for item in flags],
+        "evidence_dois": [str(item) for item in evidence_dois],
+        "rubric_scores": {
+            "precursor_plausibility": _clamp(rubric.get("precursor_plausibility", 0.0)),
+            "condition_compatibility": _clamp(rubric.get("condition_compatibility", 0.0)),
+            "operation_completeness": _clamp(rubric.get("operation_completeness", 0.0)),
+            "literature_analogy": _clamp(rubric.get("literature_analogy", 0.0)),
+            "practicality": _clamp(rubric.get("practicality", 0.0)),
+        },
+        "uncertainty": _clamp(payload.get("uncertainty", 1.0)),
+    }
+
+
+def _parse_json_with_repair(content: str) -> dict[str, Any]:
+    candidate = content.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = candidate[start : end + 1]
+
+    for variant in (candidate, _repair_json(candidate)):
+        try:
+            payload = json.loads(variant)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise ValueError("Chat completions judge returned malformed JSON that could not be repaired.")
+
+
+def _repair_json(candidate: str) -> str:
+    repaired = candidate
+    repaired = re.sub(r':\s*null\{\s*"', ': null,\n  "', repaired)
+    repaired = re.sub(r':\s*true\{\s*"', ': true,\n  "', repaired)
+    repaired = re.sub(r':\s*false\{\s*"', ': false,\n  "', repaired)
+    repaired = re.sub(r'(\bnull|\btrue|\bfalse|\d|\]|\}|")\s*\n\s*(")', r'\1,\n  \2', repaired)
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    return repaired

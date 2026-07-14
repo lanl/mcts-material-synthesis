@@ -9,9 +9,10 @@ CONFIG = {
     "seed": 0,
     "judge": {
         "name": "openai_structured",
-        "model": "gpt-4o-mini",
+        "model": "gpt-oss-120b",
         "api_key": "paste-your-api-key-here",
         # Optional for OpenAI-compatible providers or self-hosted endpoints.
-        "base_url": None,
+        "base_url": "https://aiportal-api.aws.lanl.gov",
+        "api_style": "chat_completions",
     },
 }

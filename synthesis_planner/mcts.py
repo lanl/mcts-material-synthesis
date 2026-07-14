@@ -35,11 +35,13 @@ class MonteCarloTreeSearch:
         rollout_count: int = 8,
         seed: int | None = None,
         evaluation_config: EvaluationConfig | None = None,
+        mp_client=None,
     ):
         self.exploration_constant = exploration_constant
         self.rollout_count = rollout_count
         self.rng = random.Random(seed)
         self.evaluation_config = evaluation_config or EvaluationConfig()
+        self.mp_client = mp_client
 
     def run(self, root_state: PlanningState, analogs, candidate_precursor_sets, iterations: int):
         root = TreeNode(root_state)
@@ -76,7 +78,7 @@ class MonteCarloTreeSearch:
         best_value = float("-inf")
         for _ in range(self.rollout_count):
             terminal_state = rollout_completion(state, analogs, candidate_precursor_sets, self.rng)
-            route = evaluate_state(terminal_state, analogs, self.evaluation_config)
+            route = evaluate_state(terminal_state, analogs, self.evaluation_config, mp_client=self.mp_client)
             if route.mcts_value > best_value:
                 best_value = route.mcts_value
                 best_route = route

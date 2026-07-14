@@ -16,9 +16,10 @@ from .scoring import evaluate_state
 
 
 class SynthesisPlanner:
-    def __init__(self, data_dir: str | Path = "data/raw", processed_dir: str | Path = "data/processed"):
+    def __init__(self, data_dir: str | Path = "data/raw", processed_dir: str | Path = "data/processed", mp_client=None):
         self.data_dir = Path(data_dir)
         self.processed_dir = Path(processed_dir)
+        self.mp_client = mp_client
 
     def ensure_processed_data(self) -> None:
         solid = self.processed_dir / "solid_state_routes.jsonl"
@@ -91,6 +92,7 @@ class SynthesisPlanner:
                 use_hard_checks=use_hard_checks,
                 judge_config=judge_config or {},
             ),
+            mp_client=self.mp_client,
         )
         root = mcts.run(root_state, analogs, candidate_precursor_sets, iterations=iterations)
         return _select_portfolio(root.terminal_routes, top_k)
@@ -210,19 +212,91 @@ class SynthesisPlanner:
         return path
 
 
-def _select_portfolio(routes: list[PlannedRoute], top_k: int) -> list[PlannedRoute]:
+def _select_portfolio(routes: list[PlannedRoute], top_k: int, diversity_threshold: float = 0.7) -> list[PlannedRoute]:
+    """
+    Select top-k diverse routes using greedy diversity selection.
+
+    Args:
+        routes: List of candidate routes
+        top_k: Number of routes to select
+        diversity_threshold: Routes with similarity > threshold are penalized
+
+    Returns:
+        List of diverse high-scoring routes
+    """
+    if not routes:
+        return []
+
+    # Sort by score
     ranked = sorted(routes, key=lambda route: route.score.total, reverse=True)
-    portfolio = []
-    seen_signatures = set()
-    for route in ranked:
-        signature = (
-            tuple(sorted(precursor.formula for precursor in route.precursors)),
-            tuple(operation.verb for operation in route.operations),
-        )
-        if signature in seen_signatures:
-            continue
-        seen_signatures.add(signature)
-        portfolio.append(route)
+
+    # Greedily select diverse routes
+    portfolio = [ranked[0]]  # Start with highest-scoring route
+
+    for route in ranked[1:]:
         if len(portfolio) >= top_k:
             break
-    return portfolio
+
+        # Compute similarity to existing portfolio
+        max_similarity = max(_route_similarity(route, p) for p in portfolio)
+
+        # Accept if sufficiently different from portfolio
+        if max_similarity < diversity_threshold:
+            portfolio.append(route)
+        else:
+            # Near-duplicate: only accept if score is significantly better than current portfolio
+            min_portfolio_score = min(p.score.total for p in portfolio)
+            if route.score.total > min_portfolio_score * 1.15:  # 15% better
+                portfolio.append(route)
+
+    return portfolio[:top_k]
+
+
+def _route_similarity(route1: PlannedRoute, route2: PlannedRoute) -> float:
+    """
+    Compute similarity between two routes [0, 1].
+
+    Based on:
+    - Precursor formula overlap (Jaccard)
+    - Operation sequence overlap (Jaccard)
+    - Temperature proximity
+    """
+    # Precursor similarity (Jaccard on formulas)
+    precursors1 = set(p.formula for p in route1.precursors)
+    precursors2 = set(p.formula for p in route2.precursors)
+
+    if precursors1 or precursors2:
+        precursor_sim = len(precursors1 & precursors2) / len(precursors1 | precursors2)
+    else:
+        precursor_sim = 1.0
+
+    # Operation similarity (Jaccard on verbs)
+    ops1 = set(op.verb for op in route1.operations)
+    ops2 = set(op.verb for op in route2.operations)
+
+    if ops1 or ops2:
+        operation_sim = len(ops1 & ops2) / len(ops1 | ops2)
+    else:
+        operation_sim = 1.0
+
+    # Temperature similarity
+    temp1 = _get_first_heating_temp(route1)
+    temp2 = _get_first_heating_temp(route2)
+
+    if temp1 is not None and temp2 is not None:
+        temp_diff = abs(temp1 - temp2)
+        # Normalize: 100°C difference = 0.5 similarity, 0°C = 1.0
+        temp_sim = max(0.0, 1.0 - temp_diff / 200.0)
+    else:
+        temp_sim = 0.5  # Unknown, moderate similarity
+
+    # Weighted average
+    return 0.4 * precursor_sim + 0.4 * operation_sim + 0.2 * temp_sim
+
+
+def _get_first_heating_temp(route: PlannedRoute) -> float | None:
+    """Extract first heating temperature from route operations"""
+    for op in route.operations:
+        if op.verb == "heat" and op.temperature_c and op.temperature_c.midpoint is not None:
+            return op.temperature_c.midpoint
+    return None

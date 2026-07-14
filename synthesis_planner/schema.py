@@ -126,6 +126,13 @@ class ThermoAnalysisResult:
     decomposition_match: float
     redox_match: float
     notes: tuple[str, ...] = field(default_factory=tuple)
+    hull_energy_ev_per_atom: float | None = None
+    formation_energy_ev_per_atom: float | None = None
+    decomposition_energy_ev_per_atom: float | None = None
+    competing_phases: tuple[str, ...] = field(default_factory=tuple)
+    is_stable: bool | None = None
+    reaction_driving_force_ev: float | None = None
+    is_exothermic: bool | None = None
 
 
 @dataclass(frozen=True)

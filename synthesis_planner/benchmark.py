@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 import json
 from pathlib import Path
 import random
@@ -13,6 +14,24 @@ from typing import Callable
 from .datasets import load_processed_routes
 from .planner import SynthesisPlanner
 from .schema import PlannedRoute, PlanningProblem, RouteRecord
+
+
+# Operation synonym mapping for normalization
+OPERATION_SYNONYMS = {
+    "calcine": ["calcine", "fire"],
+    "sinter": ["sinter", "anneal"],
+    "grind": ["grind", "mill", "ball_mill", "crush", "pestle"],
+    "mix": ["mix", "blend", "combine", "stir"],
+    "wash": ["wash", "rinse"],
+    "dry": ["dry"],
+    "cool": ["cool", "quench", "air_cool"],
+    "heat": ["heat", "calcine", "fire"],
+    "precipitate": ["precipitate", "precipitation"],
+    "pelletize": ["pelletize", "press", "compact"],
+    "dissolve": ["dissolve", "add_solvent"],
+    "filter": ["filter", "filtrate"],
+    "centrifuge": ["centrifuge", "separate"],
+}
 
 
 @dataclass(frozen=True)
@@ -25,6 +44,9 @@ class BenchmarkCaseResult:
     top1_valid: bool
     operation_similarity: float
     temperature_error_c: float | None
+    analog_support_score: float = 0.0
+    closest_analog_formula: str = ""
+    closest_analog_similarity: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -38,7 +60,8 @@ class BenchmarkSummary:
     top1_validity_rate: float
     mean_operation_similarity: float
     mean_temperature_error_c: float | None
-    cases: list[BenchmarkCaseResult]
+    mean_analog_support: float = 0.0
+    cases: list[BenchmarkCaseResult] = None
 
     def to_dict(self) -> dict:
         return {
@@ -51,7 +74,8 @@ class BenchmarkSummary:
             "top1_validity_rate": self.top1_validity_rate,
             "mean_operation_similarity": self.mean_operation_similarity,
             "mean_temperature_error_c": self.mean_temperature_error_c,
-            "cases": [asdict(case) for case in self.cases],
+            "mean_analog_support": self.mean_analog_support,
+            "cases": [asdict(case) for case in self.cases] if self.cases else [],
         }
 
 
@@ -107,6 +131,9 @@ def evaluate_split(
     judge_name: str = "deterministic",
     judge_config: dict | None = None,
 ) -> BenchmarkSummary:
+    from .retrieval import RetrievalIndex
+
+    retrieval = RetrievalIndex(train_routes)
     cases = []
     for index, gold in enumerate(test_routes):
         predictions = _predict_with_method(
@@ -124,6 +151,11 @@ def evaluate_split(
         if not predictions:
             continue
         top = predictions[0]
+
+        # Retrieve analogs for this target
+        analogs = retrieval.retrieve(gold.target_formula, top_k=12)
+        analog_support, closest_formula, closest_sim = _compute_analog_support(top, analogs)
+
         cases.append(
             BenchmarkCaseResult(
                 route_id=gold.route_id,
@@ -134,11 +166,14 @@ def evaluate_split(
                 top1_valid=top.hard_checks.valid,
                 operation_similarity=_operation_similarity(top, gold),
                 temperature_error_c=_temperature_error(top, gold),
+                analog_support_score=analog_support,
+                closest_analog_formula=closest_formula,
+                closest_analog_similarity=closest_sim,
             )
         )
 
     if not cases:
-        return BenchmarkSummary(method, split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, [])
+        return BenchmarkSummary(method, split_type, len(train_routes), len(test_routes), 0.0, 0.0, 0.0, 0.0, None, 0.0, [])
 
     temp_errors = [case.temperature_error_c for case in cases if case.temperature_error_c is not None]
     return BenchmarkSummary(
@@ -151,6 +186,7 @@ def evaluate_split(
         top1_validity_rate=mean(1.0 if case.top1_valid else 0.0 for case in cases),
         mean_operation_similarity=mean(case.operation_similarity for case in cases),
         mean_temperature_error_c=mean(temp_errors) if temp_errors else None,
+        mean_analog_support=mean(case.analog_support_score for case in cases),
         cases=cases,
     )
 
@@ -240,21 +276,25 @@ def _precursor_class_match(predicted: PlannedRoute, gold: RouteRecord) -> bool:
 
 
 def _operation_similarity(predicted: PlannedRoute, gold: RouteRecord) -> float:
+    """
+    Compute operation sequence similarity using edit distance.
+    Returns [0, 1] where 1 is perfect match.
+    """
     predicted_verbs = [operation.verb for operation in predicted.operations]
     gold_verbs = [operation.verb for operation in gold.operations if operation.verb != "start"]
+
     if not predicted_verbs and not gold_verbs:
         return 1.0
     if not predicted_verbs or not gold_verbs:
         return 0.0
 
-    pred_counts = Counter(predicted_verbs)
-    gold_counts = Counter(gold_verbs)
-    overlap = sum((pred_counts & gold_counts).values())
-    precision = overlap / len(predicted_verbs)
-    recall = overlap / len(gold_verbs)
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
+    # Normalize operation names to canonical forms
+    pred_normalized = [_normalize_operation(verb) for verb in predicted_verbs]
+    gold_normalized = [_normalize_operation(verb) for verb in gold_verbs]
+
+    # Compute sequence similarity using SequenceMatcher (longest common subsequence based)
+    matcher = SequenceMatcher(None, pred_normalized, gold_normalized)
+    return matcher.ratio()
 
 
 def _temperature_error(predicted: PlannedRoute, gold: RouteRecord) -> float | None:
@@ -270,6 +310,65 @@ def _first_heating_temperature(operations) -> float | None:
         if operation.verb == "heat" and operation.temperature_c and operation.temperature_c.midpoint is not None:
             return operation.temperature_c.midpoint
     return None
+
+
+def _normalize_operation(verb: str) -> str:
+    """
+    Map operation verb to canonical name using synonym dictionary.
+    Returns original verb if no mapping found.
+    """
+    verb_lower = verb.lower().strip()
+    for canonical, synonyms in OPERATION_SYNONYMS.items():
+        if verb_lower in synonyms:
+            return canonical
+    return verb_lower
+
+
+def _compute_analog_support(
+    route: PlannedRoute,
+    analogs: list[tuple[float, RouteRecord]]
+) -> tuple[float, str, float]:
+    """
+    Measure how well the route is supported by retrieved analogs.
+    Returns (support_score, closest_analog_formula, closest_analog_similarity).
+
+    Support score is based on:
+    - Precursor class overlap with analogs
+    - Operation sequence overlap with analogs
+    - Weighted by retrieval similarity
+    """
+    if not analogs:
+        return 0.0, "", 0.0
+
+    closest_analog_formula = analogs[0][1].target_formula
+    closest_analog_similarity = analogs[0][0]
+
+    # Find most similar analog route (considering both retrieval and route overlap)
+    best_support = 0.0
+    for retrieval_similarity, analog in analogs[:5]:  # Check top 5 analogs
+        # Precursor class overlap
+        route_precursor_classes = set(p.class_name for p in route.precursors if p.class_name)
+        analog_precursor_classes = set(p.class_name for p in analog.precursors if p.class_name)
+
+        if route_precursor_classes and analog_precursor_classes:
+            precursor_overlap = len(route_precursor_classes & analog_precursor_classes) / len(route_precursor_classes | analog_precursor_classes)
+        else:
+            precursor_overlap = 0.0
+
+        # Operation overlap
+        route_ops = set(_normalize_operation(op.verb) for op in route.operations)
+        analog_ops = set(_normalize_operation(op.verb) for op in analog.operations)
+
+        if route_ops and analog_ops:
+            operation_overlap = len(route_ops & analog_ops) / len(route_ops | analog_ops)
+        else:
+            operation_overlap = 0.0
+
+        # Combined support: weight retrieval similarity with route overlap
+        support = retrieval_similarity * (0.5 * precursor_overlap + 0.5 * operation_overlap)
+        best_support = max(best_support, support)
+
+    return best_support, closest_analog_formula, closest_analog_similarity
 
 
 def _predict_with_method(

@@ -10,6 +10,7 @@ import sys
 
 from .benchmark import build_split, evaluate_method_suite, evaluate_split, load_routes, save_benchmark_summary, save_split_manifest
 from .datasets import download_public_datasets, prepare_processed_data
+from .materials_project import create_mp_client_from_config
 from .planner import SynthesisPlanner
 from .schema import LabConstraints, PlanningProblem
 
@@ -88,6 +89,7 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     plan.add_argument("--judge-model", default=judge_config.get("model"))
     plan.add_argument("--judge-api-key", default=judge_config.get("api_key"))
     plan.add_argument("--judge-base-url", default=judge_config.get("base_url"))
+    plan.add_argument("--judge-api-style", choices=["auto", "responses", "chat_completions"], default=judge_config.get("api_style", "auto"))
     plan.add_argument("--disable-judge", action="store_true")
     plan.add_argument("--disable-hard-checks", action="store_true")
     plan.add_argument("--disable-retrieval", action="store_true")
@@ -131,6 +133,7 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     benchmark.add_argument("--judge-model", default=judge_config.get("model"))
     benchmark.add_argument("--judge-api-key", default=judge_config.get("api_key"))
     benchmark.add_argument("--judge-base-url", default=judge_config.get("base_url"))
+    benchmark.add_argument("--judge-api-style", choices=["auto", "responses", "chat_completions"], default=judge_config.get("api_style", "auto"))
     benchmark.add_argument("--output", default="benchmark_results/summary.json")
 
     return parser
@@ -153,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "plan":
-        planner = SynthesisPlanner(args.data_dir, args.processed_dir)
+        mp_client = create_mp_client_from_config(config)
+        planner = SynthesisPlanner(args.data_dir, args.processed_dir, mp_client=mp_client)
         judge_config = _build_judge_config(args)
         constraints = LabConstraints(
             min_temperature_c=args.min_temperature_c,
@@ -206,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "benchmark":
-        planner = SynthesisPlanner(processed_dir=args.processed_dir)
+        mp_client = create_mp_client_from_config(config)
+        planner = SynthesisPlanner(processed_dir=args.processed_dir, mp_client=mp_client)
         judge_config = _build_judge_config(args)
         routes = load_routes(args.processed_dir, args.modality)
         train_routes, test_routes = build_split(routes, args.split_type, test_fraction=args.test_fraction, seed=args.seed)
@@ -270,4 +275,6 @@ def _build_judge_config(args) -> dict:
         config["api_key"] = args.judge_api_key
     if getattr(args, "judge_base_url", None):
         config["base_url"] = args.judge_base_url
+    if getattr(args, "judge_api_style", None):
+        config["api_style"] = args.judge_api_style
     return config

@@ -110,6 +110,17 @@ python run_mcts.py plan \
   --judge-base-url "https://api.openai.com/v1"
 ```
 
+For LiteLLM-style or other OpenAI-compatible proxy endpoints that prefer chat completions, set:
+
+```bash
+python run_mcts.py plan \
+  --target BaTiO3 \
+  --judge openai_structured \
+  --judge-model gpt-oss-120b \
+  --judge-base-url "https://aiportal-api.aws.lanl.gov" \
+  --judge-api-style chat_completions
+```
+
 Generate benchmark splits:
 
 ```bash

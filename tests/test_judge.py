@@ -1,5 +1,5 @@
 from synthesis_planner.formula import infer_target_class, parse_formula
-from synthesis_planner.judge import build_judge
+from synthesis_planner.judge import _parse_json_with_repair, build_judge
 from synthesis_planner.schema import HardCheckResult, PlanningProblem, PlanningState, PrecursorRecord, ReactionBalanceResult, RedoxAnalysisResult, RouteRecord
 
 
@@ -100,3 +100,80 @@ def test_openai_structured_judge_uses_model_payload(monkeypatch):
     assert result.evidence_dois == ("10.1000/example",)
     assert fake_responses.kwargs["model"] == "gpt-4o-mini"
     assert fake_responses.kwargs["text"]["format"]["type"] == "json_schema"
+
+
+def test_openai_structured_judge_falls_back_to_chat_completions(monkeypatch):
+    judge = build_judge(
+        "openai_structured",
+        {"model": "gpt-oss-120b", "api_key": "test-key", "api_style": "auto"},
+    )
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            raise RuntimeError("responses endpoint unavailable")
+
+    class _FakeChatCompletions:
+        def __init__(self):
+            self.kwargs = None
+
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+            return type(
+                "Response",
+                (),
+                {
+                    "choices": [
+                        type(
+                            "Choice",
+                            (),
+                            {
+                                "message": type(
+                                    "Message",
+                                    (),
+                                    {
+                                        "content": (
+                                            '{"score": 0.7, "notes": ["Proxy route judged successfully."], '
+                                            '"flags": [], "evidence_dois": ["10.1000/example"], '
+                                            '"rubric_scores": {"precursor_plausibility": 0.8, "condition_compatibility": 0.7, '
+                                            '"operation_completeness": 0.6, "literature_analogy": 0.9, "practicality": 0.65}, '
+                                            '"uncertainty": 0.3}'
+                                        )
+                                    },
+                                )()
+                            },
+                        )()
+                    ]
+                },
+            )()
+
+    fake_chat = _FakeChatCompletions()
+    fake_client = type(
+        "Client",
+        (),
+        {"responses": _FakeResponses(), "chat": type("Chat", (), {"completions": fake_chat})()},
+    )()
+    monkeypatch.setattr(judge, "_build_client", lambda: fake_client)
+
+    result = judge.evaluate(_state_for(), _analogs(), _hard_checks())
+    assert result.score == 0.7
+    assert fake_chat.kwargs["model"] == "gpt-oss-120b"
+    assert fake_chat.kwargs["response_format"]["type"] == "json_object"
+
+
+def test_parse_json_with_repair_handles_proxy_malformed_null():
+    payload = _parse_json_with_repair(
+        '{\n  "score": null{\n  "notes": "Insufficient information.",\n  "flags": ["missing_input"],\n  "evidence_dois": [],\n  "rubric_scores": {},\n  "uncertainty": 0.9\n}'
+    )
+    assert payload["score"] is None
+    assert payload["flags"] == ["missing_input"]
+
+
+def test_openai_structured_judge_falls_back_to_deterministic_on_parse_failure(monkeypatch):
+    judge = build_judge(
+        "openai_structured",
+        {"model": "gpt-oss-120b", "api_key": "test-key", "api_style": "chat_completions"},
+    )
+    monkeypatch.setattr(judge, "_request_structured_judgment", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad json")))
+    result = judge.evaluate(_state_for(), _analogs(), _hard_checks())
+    assert "model_judge_fallback" in result.flags
+    assert any("structured output failure" in note for note in result.notes)

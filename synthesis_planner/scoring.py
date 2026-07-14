@@ -11,10 +11,10 @@ from .judge import build_judge
 from .schema import EvaluationConfig, PlannedRoute, PlanningState, PrecursorRecord, RouteRecord, ScoreBreakdown
 
 
-def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], config: EvaluationConfig | None = None) -> PlannedRoute:
+def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], config: EvaluationConfig | None = None, mp_client=None) -> PlannedRoute:
     config = config or EvaluationConfig()
     hard_checks = evaluate_hard_constraints(state)
-    thermo_analysis = analyze_thermodynamics(state, hard_checks.reaction_balance, hard_checks.redox)
+    thermo_analysis = analyze_thermodynamics(state, hard_checks.reaction_balance, hard_checks.redox, mp_client=mp_client)
 
     stoich = _stoich_score(hard_checks)
     validity = 1.0 if hard_checks.valid or not config.use_hard_checks else 0.0

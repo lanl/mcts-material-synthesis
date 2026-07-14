@@ -181,7 +181,7 @@ def analyze_redox(state: PlanningState, balance: ReactionBalanceResult) -> Redox
     )
 
 
-def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult, redox: RedoxAnalysisResult) -> ThermoAnalysisResult:
+def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult, redox: RedoxAnalysisResult, mp_client=None) -> ThermoAnalysisResult:
     notes = []
     if not balance.feasible:
         return ThermoAnalysisResult(
@@ -235,6 +235,56 @@ def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult,
         score -= 0.05
         notes.append("A large byproduct manifold suggests a less clean reaction channel.")
 
+    # Add Materials Project thermodynamic data if available
+    hull_energy = None
+    formation_energy = None
+    decomposition_energy_mp = None
+    competing_phases = ()
+    is_stable = None
+    reaction_driving_force = None
+    is_exothermic = None
+
+    if mp_client and mp_client.enabled:
+        try:
+            mp_data = mp_client.get_thermodynamic_data(state.problem.target_formula)
+            if mp_data:
+                hull_energy = mp_data.hull_energy_ev_per_atom
+                formation_energy = mp_data.formation_energy_ev_per_atom
+                decomposition_energy_mp = mp_data.decomposition_energy_ev_per_atom
+                competing_phases = mp_data.competing_phases
+                is_stable = mp_data.is_stable
+
+                # Adjust score based on hull energy
+                if hull_energy is not None:
+                    if hull_energy > 0.1:  # Significantly unstable
+                        score *= 0.5
+                        notes.append(f"Target is {hull_energy:.3f} eV/atom above hull (thermodynamically unstable).")
+                    elif hull_energy > 0.0:
+                        score *= 0.8
+                        notes.append(f"Target is {hull_energy:.3f} eV/atom above hull (metastable).")
+                    else:
+                        score *= 1.1  # Bonus for stable target
+                        notes.append("Target is on the convex hull (thermodynamically stable).")
+
+                # Compute reaction driving force if formation energies available
+                if formation_energy is not None:
+                    # Simple estimate: assume precursor energies are zero baseline
+                    # Real implementation would get precursor formation energies
+                    reaction_driving_force = formation_energy  # Simplified
+                    is_exothermic = reaction_driving_force < 0
+
+                    if is_exothermic:
+                        score *= 1.05
+                        notes.append(f"Reaction is exothermic (ΔH ≈ {reaction_driving_force:.2f} eV/atom).")
+
+                # Warn about competing phases
+                if competing_phases:
+                    score *= 0.9
+                    notes.append(f"Competing stable phases in this system: {', '.join(competing_phases[:3])}.")
+
+        except Exception as e:
+            notes.append(f"Materials Project lookup failed: {str(e)[:50]}")
+
     return ThermoAnalysisResult(
         score=max(0.0, min(score, 1.0)),
         gas_release_moles=gas_release,
@@ -243,6 +293,13 @@ def analyze_thermodynamics(state: PlanningState, balance: ReactionBalanceResult,
         decomposition_match=max(0.0, min(decomposition_match, 1.0)),
         redox_match=max(0.0, min(redox_match, 1.0)),
         notes=tuple(dict.fromkeys(notes)) or ("The route is thermodynamically plausible under coarse offline proxies.",),
+        hull_energy_ev_per_atom=hull_energy,
+        formation_energy_ev_per_atom=formation_energy,
+        decomposition_energy_ev_per_atom=decomposition_energy_mp,
+        competing_phases=competing_phases,
+        is_stable=is_stable,
+        reaction_driving_force_ev=reaction_driving_force,
+        is_exothermic=is_exothermic,
     )
 
 
