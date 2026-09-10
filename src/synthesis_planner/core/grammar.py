@@ -154,15 +154,31 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
     median_temp = round(median(temperatures), 1) if temperatures else 900.0
     median_time = round(median(durations), 1) if durations else 8.0
     atmosphere = atmospheres.most_common(1)[0][0] if atmospheres else "air"
-    default_step = (
-        OperationRecord(
-            verb="heat",
-            temperature_c=_range(median_temp),
-            time_h=_range(median_time, units="h"),
-            atmosphere=atmosphere,
-            source_label="calcine",
-        ),
-    )
+
+    # Offer distinct, data-grounded single-step temperatures drawn from the
+    # analog distribution (low / median / high) so the temperature setpoint is a
+    # real search decision rather than a fixed median. The median keeps the top
+    # prior; the tails get lower priors and are explored when they pay off.
+    actions: list[Action] = []
+    temp_options = _temperature_setpoints(temperatures, median_temp)
+    for label, temp, prior in temp_options:
+        actions.append(
+            Action(
+                "set_heating",
+                label,
+                prior,
+                (
+                    OperationRecord(
+                        verb="heat",
+                        temperature_c=_range(temp),
+                        time_h=_range(median_time, units="h"),
+                        atmosphere=atmosphere,
+                        source_label="calcine",
+                    ),
+                ),
+            )
+        )
+
     staged_step = (
         OperationRecord(
             verb="heat",
@@ -180,15 +196,41 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
             source_label="anneal",
         ),
     )
-
-    actions = [
-        Action("set_heating", "single heat step", 1.0, default_step),
-        Action("set_heating", "calcine -> regrind -> anneal", 0.85, staged_step),
-    ]
+    actions.append(Action("set_heating", "calcine -> regrind -> anneal", 0.85, staged_step))
     if multi_step_examples:
         example = multi_step_examples[0]
         actions.append(Action("set_heating", "literature-style multistep", 0.95, example))
     return actions
+
+
+def _temperature_setpoints(temperatures: list[float], median_temp: float) -> list[tuple[str, float, float]]:
+    """Return (label, temperature_C, prior) single-step heating options.
+
+    Uses the 25th/50th/75th percentiles of the observed analog temperatures so
+    the search can trade off between cooler and hotter data-supported setpoints.
+    Falls back to a single median action when there is too little data to form a
+    meaningful spread.
+    """
+    median_action = ("single heat step", median_temp, 1.0)
+    distinct = sorted(set(round(t, 1) for t in temperatures))
+    if len(distinct) < 4:
+        return [median_action]
+
+    ordered = sorted(temperatures)
+
+    def _percentile(p: float) -> float:
+        idx = min(len(ordered) - 1, max(0, int(round(p * (len(ordered) - 1)))))
+        return round(ordered[idx], 1)
+
+    low = _percentile(0.25)
+    high = _percentile(0.75)
+    options = [median_action]
+    # Only add tails that are meaningfully separated from the median (>=40 C).
+    if median_temp - low >= 40.0:
+        options.append(("cooler heat step", low, 0.7))
+    if high - median_temp >= 40.0:
+        options.append(("hotter heat step", high, 0.7))
+    return options
 
 
 def _range(midpoint: float, units: str = "C"):

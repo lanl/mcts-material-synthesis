@@ -40,6 +40,7 @@ class SynthesisPlanner:
         use_judge: bool = True,
         use_hard_checks: bool = True,
         use_retrieval: bool = True,
+        value_aggregation: str = "mean",
     ) -> list[PlannedRoute]:
         self.ensure_processed_data()
         routes = load_processed_routes(self.processed_dir, problem.modality)
@@ -56,6 +57,7 @@ class SynthesisPlanner:
             use_judge=use_judge,
             use_hard_checks=use_hard_checks,
             use_retrieval=use_retrieval,
+            value_aggregation=value_aggregation,
         )
 
     def plan_with_routes(
@@ -72,6 +74,7 @@ class SynthesisPlanner:
         use_judge: bool = True,
         use_hard_checks: bool = True,
         use_retrieval: bool = True,
+        value_aggregation: str = "mean",
     ) -> list[PlannedRoute]:
         retrieval = RetrievalIndex(routes)
         analogs = retrieval.retrieve(problem.target_formula, top_k=12) if use_retrieval else []
@@ -93,6 +96,7 @@ class SynthesisPlanner:
                 judge_config=judge_config or {},
             ),
             mp_client=self.mp_client,
+            value_aggregation=value_aggregation,
         )
         root = mcts.run(root_state, analogs, candidate_precursor_sets, iterations=iterations)
         return _select_portfolio(root.terminal_routes, top_k)
