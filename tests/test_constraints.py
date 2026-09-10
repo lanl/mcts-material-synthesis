@@ -1,6 +1,6 @@
-from synthesis_planner.constraints import evaluate_hard_constraints
-from synthesis_planner.formula import infer_target_class, parse_formula
-from synthesis_planner.schema import LabConstraints, NumericRange, OperationRecord, PlanningProblem, PlanningState, PrecursorRecord
+from synthesis_planner.core.constraints import evaluate_hard_constraints
+from synthesis_planner.core.formula import infer_target_class, parse_formula
+from synthesis_planner.core.schema import LabConstraints, NumericRange, OperationRecord, PlanningProblem, PlanningState, PrecursorRecord
 
 
 def _state_for(target_formula="BaTiO3", precursors=(), operations=(), constraints=None):

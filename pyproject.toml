@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,22 +8,88 @@ version = "0.2.0"
 description = "Target-conditioned MCTS synthesis planning for inorganic materials"
 readme = "README.md"
 requires-python = ">=3.9"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Los Alamos National Laboratory"},
+]
+keywords = ["mcts", "materials", "synthesis", "retrosynthesis", "monte-carlo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# Core dependencies (required). Heavy/optional integrations live in extras and
+# are imported lazily, so the core planner stays lightweight.
 dependencies = [
     "numpy>=1.24",
     "pandas>=2.0",
-    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
+# Model-backed (LLM-as-judge) scoring. The deterministic judge is the default
+# and needs none of this; openai is imported lazily inside core/judge.py.
+judge = [
+    "openai>=1.0",
+]
+
+# Materials Project thermodynamic lookups (optional). mp_api is imported lazily
+# inside data/materials_project.py.
+mp = [
+    "mp-api>=0.39",
+]
+
+# Development and testing. Pulls in the judge extra so `.[dev]` remains
+# sufficient to run the full test suite (the structured-judge tests import the
+# openai code path, even though they monkeypatch the client).
 dev = [
     "pytest>=7.0",
+    "mcts-material-synthesis[judge]",
+]
+
+# Install everything.
+all = [
+    "mcts-material-synthesis[judge,mp,dev]",
 ]
 
 [project.scripts]
 mcts-plan = "synthesis_planner.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/lanl/mcts-material-synthesis"
+Repository = "https://github.com/lanl/mcts-material-synthesis"
+
 [tool.setuptools]
-packages = ["synthesis_planner"]
+packages = [
+    "synthesis_planner",
+    "synthesis_planner.core",
+    "synthesis_planner.data",
+    "synthesis_planner.cli",
+]
+# core/ imports only itself; data/ and cli/ import lazily where the dependency is
+# heavy (openai, mp_api), so importing the package stays lightweight.
+package-dir = {"" = "src"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311']
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = []

@@ -11,9 +11,9 @@ import random
 from statistics import mean
 from typing import Callable
 
-from .datasets import load_processed_routes
+from .data.datasets import load_processed_routes
 from .planner import SynthesisPlanner
-from .schema import PlannedRoute, PlanningProblem, RouteRecord
+from .core.schema import PlannedRoute, PlanningProblem, RouteRecord
 
 
 # Operation synonym mapping for normalization
@@ -135,7 +135,7 @@ def evaluate_split(
     enable_taxonomy: bool = True,
 ) -> BenchmarkSummary:
     from .failure_taxonomy import analyze_failures, generate_taxonomy_report
-    from .retrieval import RetrievalIndex
+    from .data.retrieval import RetrievalIndex
 
     retrieval = RetrievalIndex(train_routes)
     cases = []

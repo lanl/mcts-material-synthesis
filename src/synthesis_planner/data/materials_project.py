@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .formula import parse_formula
+from ..core.formula import parse_formula
 
 
 @dataclass(frozen=True)

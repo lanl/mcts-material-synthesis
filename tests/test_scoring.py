@@ -1,6 +1,6 @@
-from synthesis_planner.formula import infer_target_class, parse_formula
-from synthesis_planner.schema import PlanningProblem, PlanningState, PrecursorRecord
-from synthesis_planner.scoring import evaluate_state
+from synthesis_planner.core.formula import infer_target_class, parse_formula
+from synthesis_planner.core.schema import PlanningProblem, PlanningState, PrecursorRecord
+from synthesis_planner.core.scoring import evaluate_state
 
 
 def test_evaluate_state_rewards_complete_oxide_route(processed_data):
@@ -25,7 +25,7 @@ def test_evaluate_state_rewards_complete_oxide_route(processed_data):
 
 
 def test_judge_flags_low_temperature_decomposition_risk():
-    from synthesis_planner.schema import NumericRange, OperationRecord
+    from synthesis_planner.core.schema import NumericRange, OperationRecord
 
     problem = PlanningProblem(target_formula="BaTiO3")
     state = PlanningState(

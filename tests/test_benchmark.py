@@ -1,5 +1,5 @@
 from synthesis_planner.benchmark import build_split, evaluate_split
-from synthesis_planner.datasets import load_processed_routes
+from synthesis_planner.data.datasets import load_processed_routes
 from synthesis_planner.planner import SynthesisPlanner
 
 

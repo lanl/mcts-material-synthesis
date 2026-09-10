@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from synthesis_planner.datasets import prepare_processed_data
+from synthesis_planner.data.datasets import prepare_processed_data
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .benchmark import BenchmarkCaseResult
-from .schema import PlannedRoute, RouteRecord
+from .core.schema import PlannedRoute, RouteRecord
 
 
 @dataclass(frozen=True)

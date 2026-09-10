@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from synthesis_planner.chemistry import _compute_reaction_driving_force, _get_standard_formation_energy
-from synthesis_planner.schema import (
+from synthesis_planner.core.chemistry import _compute_reaction_driving_force, _get_standard_formation_energy
+from synthesis_planner.core.schema import (
     BalancedSpecies,
     PlanningProblem,
     PlanningState,

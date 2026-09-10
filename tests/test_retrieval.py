@@ -1,5 +1,5 @@
-from synthesis_planner.datasets import load_processed_routes
-from synthesis_planner.retrieval import RetrievalIndex
+from synthesis_planner.data.datasets import load_processed_routes
+from synthesis_planner.data.retrieval import RetrievalIndex
 
 
 def test_retrieval_prefers_exact_target(processed_data):

@@ -11,8 +11,8 @@ from typing import Iterable
 from urllib.request import urlretrieve
 import zipfile
 
-from .formula import infer_target_class, parse_formula
-from .schema import NumericRange, OperationRecord, PrecursorRecord, RouteRecord
+from ..core.formula import infer_target_class, parse_formula
+from ..core.schema import NumericRange, OperationRecord, PrecursorRecord, RouteRecord
 
 SOLID_STATE_URL = (
     "https://raw.githubusercontent.com/CederGroupHub/text-mined-synthesis_public/"

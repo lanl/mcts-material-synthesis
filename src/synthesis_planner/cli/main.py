@@ -8,12 +8,12 @@ import json
 from pathlib import Path
 import sys
 
-from .benchmark import build_split, evaluate_method_suite, evaluate_split, load_routes, save_benchmark_summary, save_split_manifest
-from .datasets import download_public_datasets, prepare_processed_data
-from .judge_calibration import calibrate_judge, print_calibration_report
-from .materials_project import create_mp_client_from_config
-from .planner import SynthesisPlanner
-from .schema import LabConstraints, PlanningProblem
+from ..benchmark import build_split, evaluate_method_suite, evaluate_split, load_routes, save_benchmark_summary, save_split_manifest
+from ..data.datasets import download_public_datasets, prepare_processed_data
+from ..judge_calibration import calibrate_judge, print_calibration_report
+from ..data.materials_project import create_mp_client_from_config
+from ..planner import SynthesisPlanner
+from ..core.schema import LabConstraints, PlanningProblem
 
 
 def load_config(config_path: str | None = None) -> dict:

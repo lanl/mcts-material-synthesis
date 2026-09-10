@@ -1,4 +1,4 @@
-from synthesis_planner.datasets import load_processed_routes
+from synthesis_planner.data.datasets import load_processed_routes
 
 
 def test_prepare_processed_data_creates_solid_and_solution_routes(processed_data):

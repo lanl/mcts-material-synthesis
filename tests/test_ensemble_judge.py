@@ -1,7 +1,7 @@
 """Tests for ensemble judge with uncertainty quantification."""
 
-from synthesis_planner.judge import EnsembleJudge, build_judge
-from synthesis_planner.schema import (
+from synthesis_planner.core.judge import EnsembleJudge, build_judge
+from synthesis_planner.core.schema import (
     HardCheckResult,
     OperationRecord,
     PlanningProblem,

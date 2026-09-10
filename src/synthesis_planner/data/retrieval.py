@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from itertools import product
 
-from .formula import normalized_composition, safe_element_set, safe_infer_target_class, safe_required_target_elements
-from .schema import PrecursorRecord, RouteRecord
+from ..core.formula import normalized_composition, safe_element_set, safe_infer_target_class, safe_required_target_elements
+from ..core.schema import PrecursorRecord, RouteRecord
 
 
 class RetrievalIndex:
