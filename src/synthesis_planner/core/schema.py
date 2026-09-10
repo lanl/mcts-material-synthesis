@@ -159,6 +159,9 @@ class ScoreBreakdown:
     hazard: float
     complexity: float
     total: float
+    # Solved-to-stock term: fraction of leaf precursors in stock (retrosynthesis
+    # redesign). Dominant terminal reward; 0.0 when no stock context is supplied.
+    stock: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -29,15 +29,23 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
     complexity = len(state.operations) / 10.0
     cost = max(0.0, (len(state.precursors) - 2) * 0.1)
     hazard = _hazard_score(state)
+    stock_score = _stock_score(state.precursors, config)
 
     total = (
         (1.5 * validity if config.use_hard_checks else 0.0)
         + 1.2 * stoich
         + 1.0 * precursor
         + 0.6 * thermo
-        + 1.0 * retrieval
+        # Retrieval self-similarity is sharply demoted: it should *guide*
+        # expansion via priors, not reward the leaf (fixes the top1_validity~1.0
+        # circularity from EVALUATION.md). Default weight 0.2 vs the old 1.0.
+        + config.retrieval_weight * retrieval
         + 0.8 * condition
         + (1.0 * judge.score if config.use_judge else 0.0)
+        # Solved-to-stock is the dominant terminal reward (analog of "a route to
+        # purchasable stock was found"). Only credited on terminal states with a
+        # concrete precursor set and a stock context supplied via the config.
+        + config.stock_weight * stock_score
         - 0.4 * cost
         - 0.5 * hazard
         - 0.3 * complexity
@@ -66,11 +74,27 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
             hazard=hazard,
             complexity=complexity,
             total=total,
+            stock=stock_score,
         ),
         thermo=thermo_analysis,
         judge=judge,
         mcts_value=total,
     )
+
+
+def _stock_score(precursors: tuple[PrecursorRecord, ...], config: EvaluationConfig) -> float:
+    """Fraction of leaf precursors in stock (0.0 when no stock context / no precursors).
+
+    ``config.stock`` is duck-typed: any object exposing ``contains(precursor)``.
+    This is the solved-to-stock signal that dominates the terminal reward and
+    de-circularizes success (reaching buildable stock, not agreeing with
+    retrieval). A fully-in-stock route scores 1.0.
+    """
+    stock = getattr(config, "stock", None)
+    if stock is None or not precursors:
+        return 0.0
+    in_stock = sum(1 for precursor in precursors if stock.contains(precursor))
+    return in_stock / len(precursors)
 
 
 def _precursor_score(precursors: tuple[PrecursorRecord, ...], target_formula: str) -> float:
