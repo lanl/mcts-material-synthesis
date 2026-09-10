@@ -7,12 +7,12 @@ from datetime import datetime
 import json
 from pathlib import Path
 
-from .datasets import load_processed_routes, prepare_processed_data
-from .formula import safe_element_set, safe_infer_target_class
-from .mcts import MonteCarloTreeSearch
-from .retrieval import RetrievalIndex
-from .schema import EvaluationConfig, PlannedRoute, PlanningProblem, PlanningState, RouteRecord
-from .scoring import evaluate_state
+from .data.datasets import load_processed_routes, prepare_processed_data
+from .core.formula import safe_element_set, safe_infer_target_class
+from .core.mcts import MonteCarloTreeSearch
+from .data.retrieval import RetrievalIndex
+from .core.schema import EvaluationConfig, PlannedRoute, PlanningProblem, PlanningState, RouteRecord
+from .core.scoring import evaluate_state
 
 
 class SynthesisPlanner:
@@ -178,8 +178,8 @@ class SynthesisPlanner:
                 target_class=safe_infer_target_class(problem.target_formula),
                 stage="precursors",
             )
-            from .grammar import apply_action, expand_state
-            from .schema import Action
+            from .core.grammar import apply_action, expand_state
+            from .core.schema import Action
 
             current = apply_action(current, Action("set_precursors", "precursors", 1.0, precursor_set), analogs)
             while not current.is_terminal:

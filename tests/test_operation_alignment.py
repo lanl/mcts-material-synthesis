@@ -1,7 +1,7 @@
 """Tests for operation sequence alignment."""
 
 from synthesis_planner.benchmark import _normalize_operation, _operation_similarity
-from synthesis_planner.schema import OperationRecord, PlannedRoute, RouteRecord, PrecursorRecord, HardCheckResult, ScoreBreakdown, ThermoAnalysisResult, JudgeResult
+from synthesis_planner.core.schema import OperationRecord, PlannedRoute, RouteRecord, PrecursorRecord, HardCheckResult, ScoreBreakdown, ThermoAnalysisResult, JudgeResult
 
 
 def test_normalize_operation():

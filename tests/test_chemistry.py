@@ -1,6 +1,6 @@
-from synthesis_planner.chemistry import analyze_redox, analyze_thermodynamics, balance_route
-from synthesis_planner.formula import infer_target_class, parse_formula
-from synthesis_planner.schema import NumericRange, OperationRecord, PlanningProblem, PlanningState, PrecursorRecord
+from synthesis_planner.core.chemistry import analyze_redox, analyze_thermodynamics, balance_route
+from synthesis_planner.core.formula import infer_target_class, parse_formula
+from synthesis_planner.core.schema import NumericRange, OperationRecord, PlanningProblem, PlanningState, PrecursorRecord
 
 
 def _state_for(target_formula="BaTiO3", precursors=(), operations=(), modality="solid_state"):

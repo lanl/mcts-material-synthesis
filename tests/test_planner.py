@@ -1,5 +1,5 @@
 from synthesis_planner.planner import SynthesisPlanner
-from synthesis_planner.schema import PlanningProblem
+from synthesis_planner.core.schema import PlanningProblem
 
 
 def test_planner_generates_ranked_routes(sample_raw_data, processed_data):

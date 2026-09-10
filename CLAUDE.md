@@ -11,9 +11,14 @@ This is a Monte Carlo Tree Search (MCTS) based synthesis planner for inorganic m
 **Install for development:**
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip setuptools wheel pytest numpy pandas
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/python -m pip install '.[dev]'
 ```
+
+The package uses **src-layout** (`src/synthesis_planner/`). Core install is
+numpy + pandas; heavy/optional deps live in extras (`judge` = openai,
+`mp` = mp-api) and are imported lazily. `.[dev]` pulls in `judge` so it runs the
+full suite. Reinstall (`pip install -e '.[dev]'`) after moving modules.
 
 **Run tests:**
 ```bash
@@ -50,26 +55,42 @@ python run_mcts.py benchmark --method suite
 
 ## Architecture
 
+### Package layout (src-layout, layered)
+
+Source lives under `src/synthesis_planner/`, grouped into acyclic layers
+mirroring the `mcts-materials` reference (`core` <- `data` <- orchestration <- `cli`):
+
+- `core/` - route-planning engine + immutable model: `schema, formula, chemistry,
+  constraints, grammar, judge, scoring, mcts` (import only one another)
+- `data/` - `datasets, retrieval, materials_project` (heavy deps lazy)
+- top level - `planner, benchmark, failure_taxonomy, judge_calibration`
+- `cli/` - `main.py`; `cli/__init__` re-exports `build_parser/load_config/main`
+
+The bespoke **sync PUCT engine** (`core/mcts.py`) is intentionally kept rather
+than rebuilt on the reference's `Material`/async-`MCTS` interfaces - see
+`MIGRATION_PLAN.md`. The CLI stays argparse (not typer) and config stays
+dict-based (not pydantic); both are behavioral contracts locked by the tests.
+
 ### Core Planning Pipeline
 
-1. **Data ingestion** (`datasets.py`): Downloads and normalizes public synthesis corpora (solid-state, solution) into `RouteRecord` JSONL format
-2. **Retrieval** (`retrieval.py`): Finds analogous target recipes and builds precursor usage priors
-3. **Grammar expansion** (`grammar.py`): Modality-aware action generation across stages:
+1. **Data ingestion** (`data/datasets.py`): Downloads and normalizes public synthesis corpora (solid-state, solution) into `RouteRecord` JSONL format
+2. **Retrieval** (`data/retrieval.py`): Finds analogous target recipes and builds precursor usage priors
+3. **Grammar expansion** (`core/grammar.py`): Modality-aware action generation across stages:
    - `precursors`: Select precursor set from candidates
    - `preparation`: Mixing, grinding, ball milling, pelletizing
    - `heating`/`reaction`: Temperature/atmosphere schedules (modality-specific)
    - `finalize`: Cooling, washing, drying
-4. **Hard constraints** (`constraints.py`): Element coverage, stoichiometry, redox/atmosphere compatibility, modality consistency
-5. **Scoring** (`scoring.py`): Chemistry-aware route evaluation combining validity, stoichiometry, precursor plausibility, thermodynamic proxies, retrieval support, and judge scores
-6. **Judge layer** (`judge.py`): Pluggable retrieval-grounded evaluation (deterministic by default, optional OpenAI-compatible structured judge)
-7. **MCTS search** (`mcts.py`): PUCT-style tree search with rollouts and backpropagation
+4. **Hard constraints** (`core/constraints.py`): Element coverage, stoichiometry, redox/atmosphere compatibility, modality consistency
+5. **Scoring** (`core/scoring.py`): Chemistry-aware route evaluation combining validity, stoichiometry, precursor plausibility, thermodynamic proxies, retrieval support, and judge scores
+6. **Judge layer** (`core/judge.py`): Pluggable retrieval-grounded evaluation (deterministic by default, optional OpenAI-compatible structured judge)
+7. **MCTS search** (`core/mcts.py`): PUCT-style tree search with rollouts and backpropagation
 8. **Portfolio selection** (`planner.py`): Returns top-k diverse routes
 
 ### Key Modules
 
-- `schema.py`: Core dataclasses (`RouteRecord`, `PlanningState`, `Action`, `ScoreBreakdown`, `JudgeResult`, etc.)
-- `formula.py`: Inorganic formula parsing and target family inference
-- `chemistry.py`: Stoichiometric balancing with volatile species (CO2, H2O, NO2, O2), redox analysis, thermodynamic proxy features
+- `core/schema.py`: Core dataclasses (`RouteRecord`, `PlanningState`, `Action`, `ScoreBreakdown`, `JudgeResult`, etc.)
+- `core/formula.py`: Inorganic formula parsing and target family inference
+- `core/chemistry.py`: Stoichiometric balancing with volatile species (CO2, H2O, NO2, O2), redox analysis, thermodynamic proxy features
 - `benchmark.py`: Split generation (target_formula, chemical_system, random), baseline methods (nearest_neighbor, frequency_prior), retrospective evaluation
 
 ### Modality-Aware Design
@@ -81,9 +102,9 @@ The planner supports three synthesis modalities with distinct grammar paths:
 - **precipitation**: precursors → solvent setup → precipitation → wash/dry → optional anneal
 
 Each modality has:
-- Dedicated expansion logic in `grammar.py` (`_expand_solution_state`, `_apply_solution_action`)
-- Modality-specific hard checks in `constraints.py` (solvent requirements, temperature bounds, atmosphere rules)
-- Modality-specific scoring in `judge.py` (decomposition windows, autoclave ranges, post-processing completeness)
+- Dedicated expansion logic in `core/grammar.py` (`_expand_solution_state`, `_apply_solution_action`)
+- Modality-specific hard checks in `core/constraints.py` (solvent requirements, temperature bounds, atmosphere rules)
+- Modality-specific scoring in `core/judge.py` (decomposition windows, autoclave ranges, post-processing completeness)
 
 ## Configuration
 
@@ -159,7 +180,7 @@ new_state = PlanningState(
 
 ### Scoring Pipeline
 
-Scoring is decomposed into independent components summed in `scoring.py`:
+Scoring is decomposed into independent components summed in `core/scoring.py`:
 ```python
 score = (
     validity_score * VALIDITY_WEIGHT +
@@ -180,11 +201,11 @@ Each component returns a 0-1 score. Add new features by extending this pipeline.
 ### Grammar Extensions
 
 To add a new action type:
-1. Add stage enum to `schema.py` if needed
-2. Extend `expand_state()` in `grammar.py` to return new actions
+1. Add stage enum to `core/schema.py` if needed
+2. Extend `expand_state()` in `core/grammar.py` to return new actions
 3. Extend `apply_action()` to handle the new action kind
-4. Add hard checks in `constraints.py` if new validity rules apply
-5. Add scoring considerations in `scoring.py` and `judge.py`
+4. Add hard checks in `core/constraints.py` if new validity rules apply
+5. Add scoring considerations in `core/scoring.py` and `core/judge.py`
 
 ### Judge Interface
 
@@ -198,7 +219,7 @@ class CustomJudge(BaseJudge):
         return JudgeResult(score=0.8, notes=("example note",), flags=(), rubric_scores={"key": 0.8})
 ```
 
-Register in `judge.py` `_get_judge()` factory.
+Register in `core/judge.py` `_get_judge()` factory.
 
 ## Current Limitations
 

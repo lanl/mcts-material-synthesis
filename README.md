@@ -30,9 +30,18 @@ They are downloaded into `data/raw/` and normalized into JSONL route records in 
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip setuptools wheel pytest numpy pandas
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/python -m pip install .
 ```
+
+The core install is lightweight (numpy + pandas). Heavy/optional integrations
+live in extras and are imported lazily:
+
+- `.[judge]` - the model-backed OpenAI-compatible judge (`openai`); the default
+  deterministic judge needs none of this
+- `.[mp]` - Materials Project thermodynamic lookups (`mp-api`)
+- `.[dev]` - test/tooling deps (pulls in `judge`, so it runs the full suite)
+- `.[all]` - everything
 
 For development:
 
@@ -183,19 +192,21 @@ Given a target such as `BaTiO3`, the current planner:
 - `data/`
   - `raw/`: downloaded public corpora
   - `processed/`: normalized JSONL route records generated locally
-- `synthesis_planner/`
-  - `datasets.py`: dataset download, loading, normalization
-  - `formula.py`: formula parsing and target-family heuristics
-  - `chemistry.py`: stoichiometric balancing, oxidation/redox checks, and thermodynamic proxy features
-  - `retrieval.py`: analog retrieval and precursor prior generation
-  - `grammar.py`: staged solid-state grammar
-  - `constraints.py`: modality-aware hard validity checks
-  - `judge.py`: deterministic and model-backed structured retrieval-grounded judges
-  - `scoring.py`: chemistry-aware route scoring plus judge integration
-  - `mcts.py`: compact PUCT-style tree search
-  - `planner.py`: high-level planning interface
+- `src/synthesis_planner/` (src-layout; layered core -> data -> orchestration -> cli)
+  - `core/`: route-planning engine and immutable model (self-contained)
+    - `schema.py`: frozen dataclasses for routes, planning state, actions, scores
+    - `formula.py`: formula parsing and target-family heuristics
+    - `chemistry.py`: stoichiometric balancing, oxidation/redox checks, thermodynamic proxy features
+    - `constraints.py`: modality-aware hard validity checks
+    - `grammar.py`: modality-aware action grammar
+    - `judge.py`: deterministic and model-backed structured retrieval-grounded judges (openai lazy)
+    - `scoring.py`: chemistry-aware route scoring plus judge integration
+    - `mcts.py`: compact bespoke PUCT-style tree search
+  - `data/`: `datasets.py` (download/normalize), `retrieval.py` (analog retrieval + priors), `materials_project.py` (optional MP API, mp_api lazy)
+  - `planner.py`: high-level planning interface, baselines, portfolio selection
   - `benchmark.py`: split generation, baselines, and evaluations
-  - `cli.py`: `download-data`, `prepare-data`, `plan`, `make-splits`, `benchmark`
+  - `failure_taxonomy.py`: failure clustering/reporting; `judge_calibration.py`: judge calibration
+  - `cli/main.py`: `download-data`, `prepare-data`, `plan`, `make-splits`, `benchmark`, `calibrate-judge`
 - `tests/`
   - focused on formula parsing, normalization, retrieval, scoring, planner behavior, and CLI parsing
 

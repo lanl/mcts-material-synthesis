@@ -1,7 +1,7 @@
 """Tests for Materials Project integration."""
 
 import pytest
-from synthesis_planner.materials_project import MaterialsProjectClient, create_mp_client_from_config
+from synthesis_planner.data.materials_project import MaterialsProjectClient, create_mp_client_from_config
 
 
 def test_create_mp_client_disabled():

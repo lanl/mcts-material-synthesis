@@ -1,7 +1,7 @@
 """Tests for diversity-adjusted portfolio selection."""
 
 from synthesis_planner.planner import _route_similarity, _select_portfolio
-from synthesis_planner.schema import (
+from synthesis_planner.core.schema import (
     HardCheckResult,
     JudgeResult,
     NumericRange,

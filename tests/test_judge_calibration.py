@@ -8,7 +8,7 @@ from synthesis_planner.judge_calibration import (
     _spearman_correlation,
     calibrate_judge,
 )
-from synthesis_planner.schema import (
+from synthesis_planner.core.schema import (
     OperationRecord,
     PlanningProblem,
     PlanningState,

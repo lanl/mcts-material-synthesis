@@ -1,7 +1,7 @@
 """Tests for partial-state judging."""
 
-from synthesis_planner.judge import DeterministicJudge
-from synthesis_planner.schema import (
+from synthesis_planner.core.judge import DeterministicJudge
+from synthesis_planner.core.schema import (
     OperationRecord,
     PlanningProblem,
     PlanningState,
@@ -164,7 +164,7 @@ def test_partial_judge_all_good():
 
 def test_partial_judge_base_class():
     """Test that base judge returns neutral result for partial evaluation"""
-    from synthesis_planner.judge import BaseJudge
+    from synthesis_planner.core.judge import BaseJudge
 
     judge = BaseJudge()
     state = PlanningState(

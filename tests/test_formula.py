@@ -1,6 +1,6 @@
 import pytest
 
-from synthesis_planner.formula import infer_target_class, parse_formula, required_target_elements
+from synthesis_planner.core.formula import infer_target_class, parse_formula, required_target_elements
 
 
 def test_parse_simple_formula():
