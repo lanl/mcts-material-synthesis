@@ -168,6 +168,14 @@ class EvaluationConfig:
     use_hard_checks: bool = True
     use_partial_judge: bool = False
     judge_config: dict[str, Any] = field(default_factory=dict)
+    # Solved-to-stock context and reward weights (retrosynthesis redesign).
+    # ``stock`` is duck-typed (a data.stock.Stock) to avoid a core->data import
+    # cycle; it must expose ``.contains(precursor)``. When present, the scorer
+    # rewards routes whose precursors bottom out in stock and demotes the
+    # self-similarity ``retrieval`` term so it guides expansion, not the leaf.
+    stock: Any = None
+    stock_weight: float = 2.5
+    retrieval_weight: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -212,3 +220,113 @@ class PlanningState:
     @property
     def is_terminal(self) -> bool:
         return self.stage == "terminal"
+
+
+@dataclass
+class DAGNode:
+    """A node in a synthesis DAG: a material that must be made.
+
+    Mutable (unlike the frozen planning dataclasses) because the DAG is assembled
+    incrementally by the recursion driver. ``recipe`` is the chosen single-step
+    route for this material; ``children`` are the sub-targets (non-stock
+    precursors) expanded further. A node is a solved leaf when ``in_stock`` is
+    True; ``dangling`` marks a non-stock precursor that could not be expanded
+    (depth cap hit or no plausible sub-route).
+    """
+
+    target_formula: str
+    modality: str
+    depth: int
+    in_stock: bool = False
+    dangling: bool = False
+    recipe: "PlannedRoute | None" = None
+    children: list["DAGNode"] = field(default_factory=list)
+
+    @property
+    def is_leaf(self) -> bool:
+        return not self.children
+
+    def leaves(self) -> list["DAGNode"]:
+        """All leaf nodes reachable from this node (self if it is a leaf)."""
+        if self.is_leaf:
+            return [self]
+        collected: list[DAGNode] = []
+        for child in self.children:
+            collected.extend(child.leaves())
+        return collected
+
+    def node_count(self) -> int:
+        return 1 + sum(child.node_count() for child in self.children)
+
+    def max_depth(self) -> int:
+        if not self.children:
+            return self.depth
+        return max(child.max_depth() for child in self.children)
+
+
+@dataclass
+class SynthesisDAG:
+    """A full synthesis plan for a root target, as a recursive DAG of DAGNodes."""
+
+    target_formula: str
+    modality: str
+    root: DAGNode
+    max_depth_cap: int = 2
+
+    @property
+    def is_solved(self) -> bool:
+        """Solved iff every leaf is in stock and every internal node has a recipe."""
+        leaves = self.root.leaves()
+        if not leaves:
+            return False
+        if not all(leaf.in_stock and not leaf.dangling for leaf in leaves):
+            return False
+        return all(self._node_valid(node) for node in self._internal_nodes())
+
+    def _node_valid(self, node: DAGNode) -> bool:
+        if node.recipe is None:
+            return False
+        return node.recipe.hard_checks.valid
+
+    def _internal_nodes(self) -> list[DAGNode]:
+        return [node for node in self._all_nodes() if node.children]
+
+    def _all_nodes(self) -> list[DAGNode]:
+        stack = [self.root]
+        collected: list[DAGNode] = []
+        while stack:
+            node = stack.pop()
+            collected.append(node)
+            stack.extend(node.children)
+        return collected
+
+    @property
+    def depth(self) -> int:
+        return self.root.max_depth()
+
+    @property
+    def node_count(self) -> int:
+        return self.root.node_count()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_formula": self.target_formula,
+            "modality": self.modality,
+            "is_solved": self.is_solved,
+            "depth": self.depth,
+            "node_count": self.node_count,
+            "root": _dag_node_to_dict(self.root),
+        }
+
+
+def _dag_node_to_dict(node: DAGNode) -> dict[str, Any]:
+    return {
+        "target_formula": node.target_formula,
+        "modality": node.modality,
+        "depth": node.depth,
+        "in_stock": node.in_stock,
+        "dangling": node.dangling,
+        "precursors": [p.formula for p in node.recipe.precursors] if node.recipe else [],
+        "valid": node.recipe.hard_checks.valid if node.recipe else None,
+        "children": [_dag_node_to_dict(child) for child in node.children],
+    }

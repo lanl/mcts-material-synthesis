@@ -100,6 +100,20 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     plan.add_argument("--forbid-precursor-class", action="append", default=[])
     plan.add_argument("--output-dir", default="planning_results")
 
+    build_stock_cmd = subparsers.add_parser(
+        "build-stock",
+        help=(
+            "Mine the buildable-precursor stock from the processed corpora and cache "
+            "it to processed-dir/stock.json. Stock size at min-frequency (combined "
+            "corpora): ~1150 @5, ~740 @10, ~490 @20 (default), ~285 @50, ~190 @100. "
+            "Only single-cation commodity phases are stock; multi-cation complex "
+            "oxides (BaTiO3, ...) are excluded so they stay recursion sub-targets."
+        ),
+    )
+    build_stock_cmd.add_argument("--processed-dir", default=config.get("processed_dir", "data/processed"))
+    build_stock_cmd.add_argument("--min-frequency", type=int, default=config.get("stock_min_frequency", 20))
+    build_stock_cmd.add_argument("--rebuild", action="store_true", help="Force re-mining even if a cache exists")
+
     make_splits = subparsers.add_parser("make-splits", help="Create benchmark split manifests from processed solid-state routes")
     make_splits.add_argument("--processed-dir", default=config.get("processed_dir", "data/processed"))
     make_splits.add_argument("--modality", choices=["solid_state", "hydrothermal", "precipitation"], default=config.get("modality", "solid_state"))
@@ -213,6 +227,19 @@ def main(argv: list[str] | None = None) -> int:
             if route.judge.notes:
                 print(f"  Notes: {route.judge.notes[0]}")
         print(f"Saved: {output_path}")
+        return 0
+
+    if args.command == "build-stock":
+        from ..data.stock import load_or_build_stock
+
+        stock = load_or_build_stock(args.processed_dir, min_frequency=args.min_frequency, rebuild=args.rebuild)
+        print(f"min_frequency: {stock.min_frequency}")
+        print(f"stock formulas (explicit high-frequency simple): {stock.size()}")
+        print(f"allowed_classes: {', '.join(sorted(stock.allowed_classes))}")
+        print(f"cached: {Path(args.processed_dir) / 'stock.json'}")
+        sample = sorted(stock.formulas)[:15]
+        if sample:
+            print(f"sample: {', '.join(sample)}")
         return 0
 
     if args.command == "make-splits":
