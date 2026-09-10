@@ -6,7 +6,7 @@ Creates filtered versions of processed datasets for research study.
 
 import json
 from pathlib import Path
-from synthesis_planner.formula import parse_formula
+from synthesis_planner.core.formula import parse_formula
 
 def is_parseable(formula):
     """Check if formula can be parsed without errors"""
