@@ -20,40 +20,63 @@ The planner now supports three executable planning modes:
 
 ## Active package
 
-All active source code now lives in `synthesis_planner/`.
+All active source code lives under `src/synthesis_planner/` (src-layout). It is
+organized into layered sub-packages mirroring the `mcts-materials` reference's
+core -> domain -> cli split; every package boundary is acyclic
+(`core` <- `data` <- orchestration <- `cli`). See `MIGRATION_PLAN.md` for the
+rationale, including why the bespoke sync PUCT engine is kept as the domain core
+rather than rebuilt on the reference's `Material`/async-`MCTS` interfaces.
 
-- `cli.py`
-  - entrypoints for `download-data`, `prepare-data`, and `plan`
-- `datasets.py`
-  - downloads the public datasets
-  - normalizes raw records into `RouteRecord` JSONL files
+### `core/` - route-planning engine and immutable domain model
+
+These modules import only one another, so the package is self-contained.
+
+- `schema.py`
+  - shared frozen dataclasses for routes, planning state, actions, and scores
 - `formula.py`
-  - parses inorganic formulas
-  - infers coarse target families
+  - parses inorganic formulas; infers coarse target families
 - `chemistry.py`
   - balances precursor sets to targets with common volatile products/reactants
   - infers coarse route-level oxidation/reduction demand
   - derives thermodynamic proxy features from the balanced reaction
-- `schema.py`
-  - shared dataclasses for routes, planning state, actions, and scores
-- `retrieval.py`
-  - finds analogous routes
-  - builds precursor priors from literature usage
-- `grammar.py`
-  - modality-aware action expansion for solid-state, hydrothermal, and precipitation planning
-- `scoring.py`
-  - chemistry-aware route evaluation and deterministic judge output
 - `constraints.py`
   - hard validity checks, lab-constraint gating, and redox/stoichiometry validation
+- `grammar.py`
+  - modality-aware action expansion for solid-state, hydrothermal, and precipitation planning
 - `judge.py`
   - pluggable retrieval-grounded judge interface
-  - deterministic offline judge plus structured OpenAI-compatible judge
+  - deterministic offline judge plus structured OpenAI-compatible judge (openai imported lazily)
+- `scoring.py`
+  - chemistry-aware route evaluation and deterministic judge output
 - `mcts.py`
-  - compact PUCT-style tree search
+  - compact bespoke PUCT-style tree search over `PlanningState`
+
+### `data/` - ingestion, retrieval, and external services
+
+- `datasets.py`
+  - downloads the public datasets; normalizes raw records into `RouteRecord` JSONL files
+- `retrieval.py`
+  - finds analogous routes; builds precursor priors from literature usage
+- `materials_project.py`
+  - optional Materials Project thermodynamic lookups (mp_api imported lazily)
+
+### Orchestration (package top level)
+
 - `planner.py`
   - top-level orchestration, baselines, and portfolio selection
 - `benchmark.py`
   - split generation, baselines, ablations, and retrospective evaluation metrics
+- `failure_taxonomy.py`
+  - failure clustering/reporting over benchmark case results
+- `judge_calibration.py`
+  - calibrates a judge against held-out ground-truth routes
+
+### `cli/`
+
+- `main.py`
+  - argparse app: `download-data`, `prepare-data`, `plan`, `make-splits`, `benchmark`, `calibrate-judge`
+  - `cli/__init__.py` re-exports `build_parser`, `load_config`, `main`, so
+    `synthesis_planner.cli` and the `mcts-plan` entry point are unchanged
 
 ## Planning pipeline
 
