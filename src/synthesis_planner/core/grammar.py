@@ -89,7 +89,24 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
             analog_targets=state.analog_targets,
         )
 
-    if action.kind == "set_heating":
+    if action.kind == "add_heat_stage":
+        # Append one firing stage and remain in the heating MDP so the search can
+        # decide whether to add another stage or stop.
+        return PlanningState(
+            problem=state.problem,
+            target_elements=state.target_elements,
+            target_class=state.target_class,
+            stage="heating",
+            precursors=state.precursors,
+            solvents=state.solvents,
+            operations=state.operations + tuple(action.payload),
+            evidence_dois=state.evidence_dois,
+            analog_targets=state.analog_targets,
+        )
+
+    if action.kind in {"set_heating", "finish_heating"}:
+        # ``set_heating`` = full-schedule shortcut; ``finish_heating`` = stop the
+        # multi-stage MDP. Both advance to finalize.
         return PlanningState(
             problem=state.problem,
             target_elements=state.target_elements,
@@ -189,52 +206,59 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]], state: PlanningSt
         if schedule.top_atmosphere and not atmospheres:
             atmosphere = schedule.top_atmosphere
 
-    # Offer distinct, data-grounded single-step temperatures drawn from the
-    # analog distribution (low / median / high) so the temperature setpoint is a
-    # real search decision rather than a fixed median. The median keeps the top
-    # prior; the tails get lower priors and are explored when they pay off.
+    # Multi-stage firing MDP (#1): heating is a *variable-length* sequential
+    # decision, not a fixed preset bundle. At each heating node the search may
+    # either append one more firing stage (``add_heat_stage``) or stop
+    # (``finish_heating``). Route length - how many calcine/regrind/anneal
+    # stages - is therefore itself searched, mirroring real solid-state practice
+    # (single calcine; calcine -> regrind -> re-fire; etc.). A hard stage cap
+    # bounds the tree.
+    n_stages = sum(1 for op in state.operations if op.verb == "heat") if state is not None else 0
+
+    # Once the cap is reached the only legal move is to stop.
+    if n_stages >= _MAX_HEAT_STAGES:
+        return [Action("finish_heating", "done heating", 1.0, ())]
+
     actions: list[Action] = []
     temp_options = _temperature_setpoints(temperatures, median_temp)
     for label, temp, prior in temp_options:
-        actions.append(
-            Action(
-                "set_heating",
-                label,
-                prior,
-                (
-                    OperationRecord(
-                        verb="heat",
-                        temperature_c=_range(temp),
-                        time_h=_range(median_time, units="h"),
-                        atmosphere=atmosphere,
-                        source_label="calcine",
-                    ),
-                ),
-            )
-        )
-
-    staged_step = (
-        OperationRecord(
+        heat_op = OperationRecord(
             verb="heat",
-            temperature_c=_range(max(600.0, median_temp - 120.0)),
-            time_h=_range(max(2.0, median_time - 2.0), units="h"),
-            atmosphere=atmosphere,
-            source_label="calcine",
-        ),
-        OperationRecord(verb="mix", source_label="regrind"),
-        OperationRecord(
-            verb="heat",
-            temperature_c=_range(min(1300.0, median_temp + 80.0)),
+            temperature_c=_range(temp),
             time_h=_range(median_time, units="h"),
             atmosphere=atmosphere,
-            source_label="anneal",
-        ),
-    )
-    actions.append(Action("set_heating", "calcine -> regrind -> anneal", 0.85, staged_step))
-    if multi_step_examples:
-        example = multi_step_examples[0]
-        actions.append(Action("set_heating", "literature-style multistep", 0.95, example))
+            source_label="calcine" if n_stages == 0 else "anneal",
+        )
+        if n_stages == 0:
+            # First firing: a bare calcine stage.
+            actions.append(Action("add_heat_stage", f"calcine ({label})", prior, (heat_op,)))
+        else:
+            # Subsequent firings are preceded by an intergrind, as is standard
+            # for completing solid-state reactions / improving homogeneity.
+            actions.append(
+                Action(
+                    "add_heat_stage",
+                    f"regrind + re-fire ({label})",
+                    prior * 0.8,
+                    (OperationRecord(verb="mix", source_label="regrind"), heat_op),
+                )
+            )
+
+    # Stopping is only legal after at least one firing stage (a solid-state route
+    # with no heating is rejected downstream anyway).
+    if n_stages >= 1:
+        actions.append(Action("finish_heating", "done heating", 1.0, ()))
+
+    # Data-grounded shortcut: a full literature multistep schedule reachable in
+    # one move (kept so known good sequences stay directly selectable).
+    if n_stages == 0 and multi_step_examples:
+        actions.append(Action("set_heating", "literature-style multistep", 0.95, multi_step_examples[0]))
     return actions
+
+
+# Maximum number of firing stages the search may stack (depth cap for the
+# multi-stage heating MDP). >3-stage solid-state schedules are vanishingly rare.
+_MAX_HEAT_STAGES = 3
 
 
 def _temperature_setpoints(temperatures: list[float], median_temp: float) -> list[tuple[str, float, float]]:
