@@ -188,3 +188,45 @@ come from analogs - i.e. a genuine **physics / forward model** (formation
 energies, phase stability, a synthesizability predictor) that MCTS can optimize
 where literature statistics run out. That is the next real lever; further
 heuristic tuning has reached its ceiling on this corpus.
+
+## Run E - after adding the offline physics (thermodynamic) signal
+
+Added `core/physics.py`: balanced-reaction driving force from a curated
+formation-enthalpy table + an oxide-sum estimator (novel coverage) + an MP/DFT
+provider seam; folded (mean-centered) into the reward and the synth metric.
+**NB:** synth now includes the physics term, so absolute synth is not comparable
+to earlier runs - only within-run gaps are.
+
+Analog-free / analog-rich (solid-state, chemical_system, 60/stratum, leakage CLEAN):
+
+| stratum | method | synth | op_sim | cond | stage |
+|---|---|---|---|---|---|
+| novel | mcts | 0.61 | 0.40 | 0.33 | 0.38 |
+| novel | nearest_neighbor | 0.43 | 0.43 | 0.35 | 0.38 |
+| novel | frequency_prior | **0.64** | 0.39 | 0.35 | 0.33 |
+| rich | mcts | 0.76 | 0.53 | 0.37 | **0.62** |
+| rich | nearest_neighbor | 0.70 | 0.51 | 0.29 | 0.37 |
+| rich | frequency_prior | **0.79** | 0.52 | 0.40 | 0.45 |
+
+### Outcome
+
+- **Physics did not flip the novel-target result.** MCTS still marginally trails
+  the frequency prior on novel synth (0.61 vs 0.64; gap narrowed from 0.05 to
+  0.03) and on analog-rich (0.76 vs 0.79). MCTS keeps beating nearest-neighbor
+  everywhere and leads stage-count match (0.62 rich).
+- **Why (as predicted):** the offline oxide-sum estimate is *neutral* for
+  oxide->oxide reactions (it cannot see ternary stabilization), so on the
+  mostly-oxide novel targets the physics term rarely fires; where it does
+  (nitrate/oxalate precursor energetics) the frequency prior already captures it.
+
+### Established ceiling and the remaining lever
+
+Across Runs A-E, on this predominantly single-step, oxide-heavy corpus:
+**MCTS reliably beats retrieval/nearest-neighbor, and beats the frequency prior
+on procedure axes where data signal exists (precipitation conditions, stage
+structure) - but ties/marginally trails the frequency prior on overall
+synthesizability, including on novel targets, under both heuristic and offline-
+physics rewards.** Beating the prior on novel targets requires a *real* stability
+signal - Materials Project / DFT / ML formation energies via the (now wired)
+`physics_provider` seam - or a change of objective (property optimization /
+prospective validation) rather than literature-recall.
