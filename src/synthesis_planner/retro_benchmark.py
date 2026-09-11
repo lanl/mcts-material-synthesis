@@ -111,7 +111,7 @@ def _synthesizability(top: PlannedRoute, stock: Stock) -> float:
     independent of whether it exactly matches a literature recipe.
     """
     s = top.score
-    parts = [s.stoich, s.thermo, s.condition, stock_coverage(top.precursors, stock)]
+    parts = [s.stoich, s.thermo, s.condition, s.physics, stock_coverage(top.precursors, stock)]
     return sum(parts) / len(parts)
 
 

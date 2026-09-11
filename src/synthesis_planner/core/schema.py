@@ -162,6 +162,9 @@ class ScoreBreakdown:
     # Solved-to-stock term: fraction of leaf precursors in stock (retrosynthesis
     # redesign). Dominant terminal reward; 0.0 when no stock context is supplied.
     stock: float = 0.0
+    # Thermodynamic favorability of the balanced reaction in [0,1] (physics
+    # signal); 0.5 = neutral / not computable. See core/physics.py.
+    physics: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,13 @@ class EvaluationConfig:
     # conditions/stages, so it can match-or-beat that baseline rather than trail
     # it on precursor selection.
     precursor_frequency: Any = None
+    # Physics signal (offline thermodynamics by default). ``physics_provider`` is
+    # a duck-typed seam exposing ``formation_enthalpy(formula) -> float | None``
+    # for real MP/DFT/ML energies when available; None uses the offline table +
+    # oxide-sum estimator in core/physics.py. Weighted, mean-centered in the
+    # reward so a neutral (0.5) favorability contributes nothing.
+    physics_provider: Any = None
+    physics_weight: float = 0.8
 
 
 @dataclass(frozen=True)

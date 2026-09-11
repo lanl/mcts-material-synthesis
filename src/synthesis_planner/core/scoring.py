@@ -8,6 +8,7 @@ from .chemistry import analyze_thermodynamics
 from .constraints import evaluate_hard_constraints
 from .formula import safe_required_target_elements
 from .judge import build_judge
+from .physics import reaction_enthalpy, thermo_favorability
 from .schema import EvaluationConfig, PlannedRoute, PlanningState, PrecursorRecord, RouteRecord, ScoreBreakdown
 
 
@@ -30,6 +31,13 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
     cost = max(0.0, (len(state.precursors) - 2) * 0.1)
     hazard = _hazard_score(state)
     stock_score = _stock_score(state.precursors, config)
+    # Physics signal: thermodynamic favorability of the balanced reaction. A
+    # non-analog signal (computed from formation enthalpies, not retrieval) that
+    # is available even for novel targets via the oxide-sum estimator.
+    delta_h, computable = reaction_enthalpy(
+        state, hard_checks.reaction_balance, getattr(config, "physics_provider", None)
+    )
+    physics = thermo_favorability(delta_h, computable)
 
     total = (
         (1.5 * validity if config.use_hard_checks else 0.0)
@@ -49,6 +57,9 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
         # purchasable stock was found"). Only credited on terminal states with a
         # concrete precursor set and a stock context supplied via the config.
         + config.stock_weight * stock_score
+        # Physics favorability, mean-centered so neutral (0.5) adds nothing and a
+        # thermodynamically downhill reaction is rewarded / uphill penalized.
+        + config.physics_weight * (physics - 0.5)
         - 0.4 * cost
         - 0.5 * hazard
         - 0.3 * complexity
@@ -78,6 +89,7 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
             complexity=complexity,
             total=total,
             stock=stock_score,
+            physics=physics,
         ),
         thermo=thermo_analysis,
         judge=judge,
