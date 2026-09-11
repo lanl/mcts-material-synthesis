@@ -24,7 +24,7 @@ def expand_state(
     templates=None,
 ) -> list[Action]:
     if state.problem.modality in {"hydrothermal", "precipitation"}:
-        return _expand_solution_state(state, analogs, candidate_precursor_sets)
+        return _expand_solution_state(state, analogs, candidate_precursor_sets, templates)
 
     if state.stage == "precursors":
         return [
@@ -219,6 +219,13 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]], state: PlanningSt
     if n_stages >= _MAX_HEAT_STAGES:
         return [Action("finish_heating", "done heating", 1.0, ())]
 
+    # Fix #2: bias how often the search adds another firing stage to the analog
+    # stage-count distribution. ``continue_prob`` = P(a route uses > n_stages
+    # firings | it uses >= n_stages), so once enough stages are placed the search
+    # is steered toward stopping rather than over-stacking stages the literature
+    # does not use.
+    continue_prob = _stage_continuation_prob(analogs, n_stages)
+
     actions: list[Action] = []
     temp_options = _temperature_setpoints(temperatures, median_temp)
     for label, temp, prior in temp_options:
@@ -230,24 +237,26 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]], state: PlanningSt
             source_label="calcine" if n_stages == 0 else "anneal",
         )
         if n_stages == 0:
-            # First firing: a bare calcine stage.
+            # First firing: a bare calcine stage (always needed; not down-weighted).
             actions.append(Action("add_heat_stage", f"calcine ({label})", prior, (heat_op,)))
         else:
-            # Subsequent firings are preceded by an intergrind, as is standard
-            # for completing solid-state reactions / improving homogeneity.
+            # Subsequent firings are preceded by an intergrind, as is standard for
+            # completing solid-state reactions; weighted by the data-driven
+            # probability that another stage is warranted.
             actions.append(
                 Action(
                     "add_heat_stage",
                     f"regrind + re-fire ({label})",
-                    prior * 0.8,
+                    prior * max(0.05, continue_prob),
                     (OperationRecord(verb="mix", source_label="regrind"), heat_op),
                 )
             )
 
     # Stopping is only legal after at least one firing stage (a solid-state route
-    # with no heating is rejected downstream anyway).
+    # with no heating is rejected downstream anyway). Its prior rises as the data
+    # says most routes stop here.
     if n_stages >= 1:
-        actions.append(Action("finish_heating", "done heating", 1.0, ()))
+        actions.append(Action("finish_heating", "done heating", max(0.15, 1.0 - continue_prob), ()))
 
     # Data-grounded shortcut: a full literature multistep schedule reachable in
     # one move (kept so known good sequences stay directly selectable).
@@ -259,6 +268,26 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]], state: PlanningSt
 # Maximum number of firing stages the search may stack (depth cap for the
 # multi-stage heating MDP). >3-stage solid-state schedules are vanishingly rare.
 _MAX_HEAT_STAGES = 3
+
+
+def _stage_continuation_prob(analogs: list[tuple[float, RouteRecord]], n_stages: int) -> float:
+    """P(use another firing stage | already used ``n_stages``), from the analogs.
+
+    Estimated as the fraction of analog routes that used strictly more than
+    ``n_stages`` heating steps among those that used at least ``n_stages``. With
+    no analog signal, fall back to a weak default so the search still explores a
+    second stage occasionally.
+    """
+    counts = [
+        sum(1 for op in route.operations if op.verb == "heat")
+        for _, route in analogs
+        if any(op.verb == "heat" for op in route.operations)
+    ]
+    reached = [c for c in counts if c >= n_stages]
+    if not reached:
+        return 0.3
+    beyond = sum(1 for c in reached if c > n_stages)
+    return beyond / len(reached)
 
 
 def _temperature_setpoints(temperatures: list[float], median_temp: float) -> list[tuple[str, float, float]]:
@@ -297,7 +326,7 @@ def _range(midpoint: float, units: str = "C"):
     return NumericRange(midpoint, midpoint, units)
 
 
-def _expand_solution_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]]) -> list[Action]:
+def _expand_solution_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]], templates=None) -> list[Action]:
     if state.stage == "precursors":
         return [
             Action(
@@ -313,7 +342,7 @@ def _expand_solution_state(state: PlanningState, analogs: list[tuple[float, Rout
     if state.stage == "reaction":
         return _solution_reaction_actions(state.problem.modality, analogs)
     if state.stage == "postprocess":
-        return _solution_postprocess_actions(state.problem.modality, analogs, state)
+        return _solution_postprocess_actions(state.problem.modality, analogs, state, templates)
     if state.stage == "finalize":
         return [
             Action("finalize", "terminate", 1.0, ()),
@@ -472,6 +501,7 @@ def _solution_postprocess_actions(
     modality: str,
     analogs: list[tuple[float, RouteRecord]],
     state: PlanningState | None = None,
+    templates=None,
 ) -> list[Action]:
     wash_dry = (
         OperationRecord(verb="wash", source_label="wash"),
@@ -479,19 +509,20 @@ def _solution_postprocess_actions(
     )
     if modality == "hydrothermal":
         # A hydrothermal hold often crystallises the product directly, so a final
-        # anneal is optional (lower prior).
+        # anneal is optional (lower prior). Anneal temperature is data-driven.
+        anneal_temp, anneal_time = _data_driven_calcine(analogs, state, templates, default_temp=400.0, default_time=4.0)
         return [
             Action("set_solution_postprocess", "wash -> dry", 1.0, wash_dry),
             Action(
                 "set_solution_postprocess",
-                "wash -> dry -> anneal",
+                f"wash -> dry -> anneal@{int(anneal_temp)}C",
                 0.7,
                 wash_dry
                 + (
                     OperationRecord(
                         verb="heat",
-                        temperature_c=_range(400.0),
-                        time_h=_range(4.0, units="h"),
+                        temperature_c=_range(anneal_temp),
+                        time_h=_range(anneal_time, units="h"),
                         source_label="post-anneal",
                     ),
                 ),
@@ -501,18 +532,21 @@ def _solution_postprocess_actions(
     # Precipitation / sol-gel: the dried solid is an amorphous hydroxide / oxalate
     # / gel, NOT the crystalline target. Calcination is required to form the
     # product, so it is the dominant action; a bare wash->dry (target already
-    # crystalline as-precipitated) is the low-prior exception.
+    # crystalline as-precipitated) is the low-prior exception. The calcination
+    # temperature/time are mined from the analog distribution (fixing the old
+    # hard-coded 500 C that scored cond=0.06 in the benchmark).
     needs_calcination = state is None or state.target_class in _CALCINATION_REQUIRED_CLASSES
+    calcine_temp, calcine_time = _data_driven_calcine(analogs, state, templates, default_temp=500.0, default_time=3.0)
     calcine = Action(
         "set_solution_postprocess",
-        "wash -> dry -> calcine",
+        f"wash -> dry -> calcine@{int(calcine_temp)}C",
         1.0 if needs_calcination else 0.75,
         wash_dry
         + (
             OperationRecord(
                 verb="heat",
-                temperature_c=_range(500.0),
-                time_h=_range(3.0, units="h"),
+                temperature_c=_range(calcine_temp),
+                time_h=_range(calcine_time, units="h"),
                 source_label="calcine",
             ),
         ),
@@ -524,3 +558,33 @@ def _solution_postprocess_actions(
         wash_dry,
     )
     return [calcine, wash_dry_only] if needs_calcination else [wash_dry_only, calcine]
+
+
+def _data_driven_calcine(analogs, state, templates, default_temp: float, default_time: float) -> tuple[float, float]:
+    """Calcination (temperature, time) mined from analogs / templates, not hard-coded.
+
+    Prefers the median heating temperature of the retrieved analog routes (which,
+    for solution modalities, is the calcination step); falls back to the mined
+    per-family condition schedule, then to the supplied defaults.
+    """
+    temps, times = [], []
+    for _, route in analogs:
+        for op in route.operations:
+            if op.verb == "heat":
+                if op.temperature_c and op.temperature_c.midpoint is not None:
+                    temps.append(op.temperature_c.midpoint)
+                if op.time_h and op.time_h.midpoint is not None:
+                    times.append(op.time_h.midpoint)
+    temp = round(median(temps), 1) if temps else None
+    time_h = round(median(times), 1) if times else None
+    if temp is None and templates is not None and state is not None:
+        try:
+            schedule = templates.condition_schedule(state.target_class, _cation_count(state.target_elements))
+        except Exception:
+            schedule = None
+        if schedule is not None:
+            if schedule.temperature_p50 is not None:
+                temp = schedule.temperature_p50
+            if schedule.dwell_h_median:
+                time_h = schedule.dwell_h_median
+    return (temp if temp is not None else default_temp, time_h if time_h is not None else default_time)

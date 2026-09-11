@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from statistics import mean
+from statistics import mean, median
 
 from .chemistry import analyze_thermodynamics
 from .constraints import evaluate_hard_constraints
@@ -20,7 +20,7 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
     validity = 1.0 if hard_checks.valid or not config.use_hard_checks else 0.0
     retrieval = max((score for score, _ in analogs), default=0.0) / 10.0
     precursor = _precursor_score(state.precursors, state.problem.target_formula, config)
-    condition = _condition_score(state)
+    condition = _condition_score(state, analogs)
     thermo = thermo_analysis.score
     judge = build_judge(
         config.judge_name if config.use_judge else "none",
@@ -40,7 +40,10 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
         # expansion via priors, not reward the leaf (fixes the top1_validity~1.0
         # circularity from EVALUATION.md). Default weight 0.2 vs the old 1.0.
         + config.retrieval_weight * retrieval
-        + 0.8 * condition
+        # Condition quality is weighted more heavily (0.8 -> 1.3): since MCTS
+        # inherits the frequency prior on precursors, conditions/stages are where
+        # search must add value over that prior.
+        + 1.3 * condition
         + (1.0 * judge.score if config.use_judge else 0.0)
         # Solved-to-stock is the dominant terminal reward (analog of "a route to
         # purchasable stock was found"). Only credited on terminal states with a
@@ -137,38 +140,78 @@ def _precursor_frequency_score(
     return sum(float(fmap.get(p.formula, 0.0)) for p in precursors) / len(precursors)
 
 
-def _condition_score(state: PlanningState) -> float:
-    heating = [operation for operation in state.operations if operation.verb == "heat"]
-    if state.problem.modality in {"solid_state", "hydrothermal"} and not heating:
+def _condition_score(state: PlanningState, analogs: list | None = None) -> float:
+    """Graded, data-driven condition quality in [0,1].
+
+    Redesigned (Fix #3) so the score does NOT saturate: the dominant term is a
+    *continuous* temperature-appropriateness signal measured against the analog
+    temperature distribution (falling back to physical bands when analogs are
+    weak). This gives MCTS a real gradient to optimize conditions over the
+    frequency prior's static defaults, and makes a missing calcination genuinely
+    costly for precipitation-derived crystalline oxides.
+    """
+    ops = state.operations
+    modality = state.problem.modality
+    heating = [op for op in ops if op.verb == "heat"]
+    # Key step must be present for the modality.
+    if modality in {"solid_state", "hydrothermal"} and not heating:
         return 0.0
-    if state.problem.modality == "precipitation" and not any(operation.verb == "precipitate" for operation in state.operations):
+    if modality == "precipitation" and not any(op.verb == "precipitate" for op in ops):
         return 0.0
+
     temperatures = [op.temperature_c.midpoint for op in heating if op.temperature_c and op.temperature_c.midpoint is not None]
-    score = 0.5
-    if state.problem.modality == "solid_state" and temperatures:
-        avg_temp = mean(temperatures)
-        if 650.0 <= avg_temp <= 1250.0:
-            score += 0.25
-        if state.target_class == "oxide" and avg_temp >= 750.0:
-            score += 0.15
-    if state.problem.modality == "hydrothermal" and temperatures:
-        avg_temp = mean(temperatures)
-        if 100.0 <= avg_temp <= 250.0:
-            score += 0.3
-        if state.solvents:
-            score += 0.1
-        if any(operation.verb == "wash" for operation in state.operations) and any(operation.verb == "dry" for operation in state.operations):
-            score += 0.1
-    if state.problem.modality == "precipitation":
-        if any(operation.verb == "precipitate" for operation in state.operations):
-            score += 0.2
-        if state.solvents:
-            score += 0.1
-        if any(operation.verb == "wash" for operation in state.operations) and any(operation.verb == "dry" for operation in state.operations):
-            score += 0.15
-    if any(operation.verb == "mix" for operation in state.operations):
+    analog_temps = _analog_heat_temperatures(analogs)
+
+    # Process-completeness (minor, non-saturating) component.
+    score = 0.0
+    if any(op.verb == "mix" for op in ops):
         score += 0.1
+    if modality in {"precipitation", "hydrothermal"}:
+        if state.solvents:
+            score += 0.1
+        if any(op.verb == "wash" for op in ops) and any(op.verb == "dry" for op in ops):
+            score += 0.1
+
+    # Temperature-appropriateness (dominant, continuous) component.
+    if modality == "solid_state":
+        score += 0.55 * _temp_appropriateness(temperatures, analog_temps, (650.0, 1250.0))
+    elif modality == "hydrothermal":
+        score += 0.55 * _temp_appropriateness(temperatures, analog_temps, (100.0, 250.0))
+    else:  # precipitation: a calcination is required to crystallize the oxide.
+        score += 0.15  # precipitate present (guarded above)
+        score += 0.45 * _temp_appropriateness(temperatures, analog_temps, (300.0, 900.0))
     return min(score, 1.0)
+
+
+def _analog_heat_temperatures(analogs: list | None) -> list[float]:
+    if not analogs:
+        return []
+    temps = []
+    for _, route in analogs:
+        for op in route.operations:
+            if op.verb == "heat" and op.temperature_c and op.temperature_c.midpoint is not None:
+                temps.append(op.temperature_c.midpoint)
+    return temps
+
+
+def _temp_appropriateness(temperatures: list[float], analog_temps: list[float], band: tuple[float, float]) -> float:
+    """Continuous [0,1] credit for how appropriate the heating temperature is.
+
+    Prefers proximity to the analog median temperature; falls back to a physical
+    band with graded fall-off. Returns 0 when no heating temperature is present
+    (so a missing/untempered firing earns no temperature credit).
+    """
+    if not temperatures:
+        return 0.0
+    avg_temp = mean(temperatures)
+    if analog_temps:
+        target = median(analog_temps)
+        return max(0.0, 1.0 - abs(avg_temp - target) / 300.0)
+    lo, hi = band
+    if lo <= avg_temp <= hi:
+        return 1.0
+    dist = (lo - avg_temp) if avg_temp < lo else (avg_temp - hi)
+    return max(0.0, 1.0 - dist / 300.0)
 
 
 def _stoich_score(hard_checks) -> float:
