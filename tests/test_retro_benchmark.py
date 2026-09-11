@@ -11,9 +11,11 @@ from synthesis_planner.core.schema import (
     ScoreBreakdown,
     ThermoAnalysisResult,
 )
+from synthesis_planner.data.retrieval import RetrievalIndex
 from synthesis_planner.retro_benchmark import (
     build_gold_targets,
     leakage_audit,
+    retrieval_support,
     _recall_metrics,
 )
 
@@ -80,3 +82,17 @@ def test_recall_metrics_exact_and_jaccard():
     # recall@k picks up a correct set lower in the list.
     at_k = _recall_metrics([_pred(["BaO", "TiO2"]), _pred(["BaCO3", "TiO2"])], gold)
     assert not at_k["recall_at_1"] and at_k["recall_at_k"]
+
+
+def test_retrieval_support_ranks_analog_free_below_analog_rich():
+    """A target sharing elements with train scores higher support than a novel one."""
+    train = [
+        _gold_route("BaTiO3", "Ba-O-Ti", ["BaCO3", "TiO2"]),
+        _gold_route("SrTiO3", "O-Sr-Ti", ["SrCO3", "TiO2"]),
+    ]
+    index = RetrievalIndex(train)
+    # Shares Ti-O chemistry with train -> analog-rich.
+    rich = retrieval_support(index, "CaTiO3")
+    # Disjoint chemistry -> analog-free / novel.
+    novel = retrieval_support(index, "LiCoPO4")
+    assert rich > novel

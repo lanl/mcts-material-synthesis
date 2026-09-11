@@ -279,58 +279,153 @@ def run_retro_benchmark(
     }
 
     for method in methods:
-        synth, opsim, stage_match = [], [], []
-        solved, coverage, r1, rk, ck, jac = [], [], [], [], [], []
-        cond_hits, cond_total = 0, 0
-        for idx, target in enumerate(targets):
-            problem = PlanningProblem(target_formula=target, modality=modality)
-            try:
-                preds = _predict(
-                    method, planner, problem, train_routes, stock, templates, retrieval,
-                    iterations, rollout_count, top_k, seed + idx, rng,
-                )
-            except Exception:
-                # A pathological target recipe (un-balanceable sub-formula) counts
-                # as an unsolved miss rather than aborting the whole benchmark.
-                preds = []
-            if not preds:
-                synth.append(0.0); opsim.append(0.0); stage_match.append(0.0)
-                solved.append(0.0); coverage.append(0.0); r1.append(0.0)
-                rk.append(0.0); ck.append(0.0); jac.append(0.0)
-                continue
-            top = preds[0]
-            g = gold[target]
-            # Headline: procedure quality.
-            synth.append(_synthesizability(top, stock))
-            opsim.append(_best_operation_similarity(top, g))
-            stage_match.append(1.0 if _stage_count_matches(top, g) else 0.0)
-            in_range = _condition_in_range(top, g)
-            if in_range is not None:
-                cond_total += 1
-                cond_hits += 1 if in_range else 0
-            # Buildability + secondary recovery diagnostics.
-            solved.append(1.0 if route_is_solved(top.precursors, stock) else 0.0)
-            coverage.append(stock_coverage(top.precursors, stock))
-            m = _recall_metrics(preds, g)
-            r1.append(1.0 if m["recall_at_1"] else 0.0)
-            rk.append(1.0 if m["recall_at_k"] else 0.0)
-            ck.append(1.0 if m["class_recall_at_k"] else 0.0)
-            jac.append(m["jaccard"])
-
-        res = RetroBenchmarkResult(
-            method=method, split_type=split_type, modality=modality,
-            n_train=len(train_routes), n_targets=len(targets),
-            mean_synthesizability=mean(synth) if synth else 0.0,
-            mean_operation_similarity=mean(opsim) if opsim else 0.0,
-            condition_in_range_rate=(cond_hits / cond_total) if cond_total else 0.0,
-            stage_count_match_rate=mean(stage_match) if stage_match else 0.0,
-            solve_rate=mean(solved) if solved else 0.0,
-            mean_stock_coverage=mean(coverage) if coverage else 0.0,
-            precursor_recall_at_1=mean(r1) if r1 else 0.0,
-            precursor_recall_at_k=mean(rk) if rk else 0.0,
-            class_recall_at_k=mean(ck) if ck else 0.0,
-            mean_precursor_jaccard=mean(jac) if jac else 0.0,
-            top_k=top_k,
+        res = _evaluate_method_on_targets(
+            method, targets, gold, planner, train_routes, stock, templates, retrieval,
+            modality, split_type, iterations, rollout_count, top_k, seed, rng,
         )
         results["methods"][method] = res.to_dict()
+    return results
+
+
+def _evaluate_method_on_targets(
+    method, targets, gold, planner, train_routes, stock, templates, retrieval,
+    modality, split_type, iterations, rollout_count, top_k, seed, rng,
+) -> RetroBenchmarkResult:
+    """Aggregate all metrics for one method over a fixed target list."""
+    synth, opsim, stage_match = [], [], []
+    solved, coverage, r1, rk, ck, jac = [], [], [], [], [], []
+    cond_hits, cond_total = 0, 0
+    for idx, target in enumerate(targets):
+        problem = PlanningProblem(target_formula=target, modality=modality)
+        try:
+            preds = _predict(
+                method, planner, problem, train_routes, stock, templates, retrieval,
+                iterations, rollout_count, top_k, seed + idx, rng,
+            )
+        except Exception:
+            # A pathological target recipe (un-balanceable sub-formula) counts as
+            # an unsolved miss rather than aborting the whole benchmark.
+            preds = []
+        if not preds:
+            synth.append(0.0); opsim.append(0.0); stage_match.append(0.0)
+            solved.append(0.0); coverage.append(0.0); r1.append(0.0)
+            rk.append(0.0); ck.append(0.0); jac.append(0.0)
+            continue
+        top = preds[0]
+        g = gold[target]
+        synth.append(_synthesizability(top, stock))
+        opsim.append(_best_operation_similarity(top, g))
+        stage_match.append(1.0 if _stage_count_matches(top, g) else 0.0)
+        in_range = _condition_in_range(top, g)
+        if in_range is not None:
+            cond_total += 1
+            cond_hits += 1 if in_range else 0
+        solved.append(1.0 if route_is_solved(top.precursors, stock) else 0.0)
+        coverage.append(stock_coverage(top.precursors, stock))
+        m = _recall_metrics(preds, g)
+        r1.append(1.0 if m["recall_at_1"] else 0.0)
+        rk.append(1.0 if m["recall_at_k"] else 0.0)
+        ck.append(1.0 if m["class_recall_at_k"] else 0.0)
+        jac.append(m["jaccard"])
+
+    return RetroBenchmarkResult(
+        method=method, split_type=split_type, modality=modality,
+        n_train=len(train_routes), n_targets=len(targets),
+        mean_synthesizability=mean(synth) if synth else 0.0,
+        mean_operation_similarity=mean(opsim) if opsim else 0.0,
+        condition_in_range_rate=(cond_hits / cond_total) if cond_total else 0.0,
+        stage_count_match_rate=mean(stage_match) if stage_match else 0.0,
+        solve_rate=mean(solved) if solved else 0.0,
+        mean_stock_coverage=mean(coverage) if coverage else 0.0,
+        precursor_recall_at_1=mean(r1) if r1 else 0.0,
+        precursor_recall_at_k=mean(rk) if rk else 0.0,
+        class_recall_at_k=mean(ck) if ck else 0.0,
+        mean_precursor_jaccard=mean(jac) if jac else 0.0,
+        top_k=top_k,
+    )
+
+
+def retrieval_support(retrieval: RetrievalIndex, target_formula: str) -> float:
+    """Similarity of the nearest train analog to a target (0 if none).
+
+    This is the axis that separates "analog-rich" from "analog-free / novel"
+    held-out targets: a low value means retrieval and recipe-copying have little
+    to lean on, so any advantage must come from chemistry-driven search.
+    """
+    analogs = retrieval.retrieve(target_formula, top_k=1)
+    return analogs[0][0] if analogs else 0.0
+
+
+def run_analog_free_benchmark(
+    processed_dir: str,
+    modality: str = "solid_state",
+    split_type: str = "chemical_system",
+    methods: tuple[str, ...] = ("mcts", "nearest_neighbor", "frequency_prior", "random"),
+    test_fraction: float = 0.2,
+    support_quantile: float = 0.33,
+    max_targets_per_stratum: int = 60,
+    iterations: int = 60,
+    rollout_count: int = 3,
+    top_k: int = 3,
+    min_frequency: int = 20,
+    seed: int = 0,
+) -> dict:
+    """Compare methods on the analog-FREE (low retrieval support) vs analog-RICH
+    (high support) held-out strata.
+
+    Hypothesis: on the low-support stratum, nearest-neighbor and the frequency
+    prior degrade (no close recipe to copy; unusual element combinations), so if
+    chemistry-driven MCTS search adds value anywhere, it is here.
+    """
+    import random
+
+    from .benchmark import load_routes
+    from .core.formula import parse_formula
+
+    routes = load_routes(processed_dir, modality)
+    train_routes, test_routes = build_split(routes, split_type, test_fraction=test_fraction, seed=seed)
+    audit = leakage_audit(train_routes, test_routes, split_type)
+
+    stock = build_stock(train_routes, min_frequency=min_frequency)
+    templates = mine_templates(train_routes)
+    retrieval = RetrievalIndex(train_routes)
+    gold = build_gold_targets(test_routes)
+
+    def _parseable(formula: str) -> bool:
+        try:
+            parse_formula(formula)
+            return True
+        except Exception:
+            return False
+
+    targets = [t for t in sorted(gold) if _parseable(t)]
+    support = {t: retrieval_support(retrieval, t) for t in targets}
+    ordered = sorted(targets, key=lambda t: support[t])
+    n = len(ordered)
+    k = max(1, int(n * support_quantile))
+    low = ordered[:k][:max_targets_per_stratum]          # analog-free / novel
+    high = ordered[-k:][:max_targets_per_stratum]        # analog-rich
+
+    def _support_stats(subset):
+        vals = [support[t] for t in subset]
+        return {"n": len(subset), "support_min": min(vals) if vals else 0.0,
+                "support_max": max(vals) if vals else 0.0,
+                "support_mean": (sum(vals) / len(vals)) if vals else 0.0}
+
+    results: dict = {
+        "_leakage_audit": audit,
+        "_n_test_targets_parseable": n,
+        "_support_quantile": support_quantile,
+        "analog_free": {"_stratum": _support_stats(low), "methods": {}},
+        "analog_rich": {"_stratum": _support_stats(high), "methods": {}},
+    }
+    planner = SynthesisPlanner(processed_dir=processed_dir)
+    for name, subset in (("analog_free", low), ("analog_rich", high)):
+        rng = random.Random(seed)
+        for method in methods:
+            res = _evaluate_method_on_targets(
+                method, subset, gold, planner, train_routes, stock, templates, retrieval,
+                modality, split_type, iterations, rollout_count, top_k, seed, rng,
+            )
+            results[name]["methods"][method] = res.to_dict()
     return results
