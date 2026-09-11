@@ -51,12 +51,16 @@ class MonteCarloTreeSearch:
         evaluation_config: EvaluationConfig | None = None,
         mp_client=None,
         value_aggregation: str = "mean",
+        templates=None,
     ):
         self.exploration_constant = exploration_constant
         self.rollout_count = rollout_count
         self.rng = random.Random(seed)
         self.evaluation_config = evaluation_config or EvaluationConfig()
         self.mp_client = mp_client
+        # Optional mined TemplateLibrary (WS-B), duck-typed; widens the heating
+        # action space via per-family condition schedules when present.
+        self.templates = templates
         if value_aggregation not in {"mean", "max"}:
             raise ValueError(f"value_aggregation must be 'mean' or 'max', got {value_aggregation!r}")
         self.value_aggregation = value_aggregation
@@ -104,7 +108,7 @@ class MonteCarloTreeSearch:
     def _expand(self, node: TreeNode, analogs, candidate_precursor_sets) -> None:
         if node.expanded or node.state.is_terminal:
             return
-        actions = expand_state(node.state, analogs, candidate_precursor_sets)
+        actions = expand_state(node.state, analogs, candidate_precursor_sets, self.templates)
         # Normalize sibling priors to sum to 1 (AlphaZero-style) so the PUCT
         # exploration term is comparably scaled regardless of how many actions
         # the grammar emits or how the raw priors are magnituded.
@@ -121,7 +125,7 @@ class MonteCarloTreeSearch:
         value_sum = 0.0
         count = 0
         for _ in range(self.rollout_count):
-            terminal_state = rollout_completion(state, analogs, candidate_precursor_sets, self.rng)
+            terminal_state = rollout_completion(state, analogs, candidate_precursor_sets, self.rng, self.templates)
             route = evaluate_state(terminal_state, analogs, self.evaluation_config, mp_client=self.mp_client)
             value_sum += route.mcts_value
             count += 1

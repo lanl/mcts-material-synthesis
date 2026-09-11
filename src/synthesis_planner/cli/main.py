@@ -99,6 +99,9 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     plan.add_argument("--allowed-atmosphere", action="append", default=[])
     plan.add_argument("--forbid-precursor-class", action="append", default=[])
     plan.add_argument("--output-dir", default="planning_results")
+    plan.add_argument("--retro", action="store_true", help="Plan a recursive synthesis DAG (stock-grounded, depth-capped)")
+    plan.add_argument("--max-depth", type=int, default=2, help="Max recursion depth for --retro (default 2)")
+    plan.add_argument("--stock-min-frequency", type=int, default=config.get("stock_min_frequency", 20))
 
     build_stock_cmd = subparsers.add_parser(
         "build-stock",
@@ -194,6 +197,24 @@ def main(argv: list[str] | None = None) -> int:
             allowed_atmospheres=tuple(args.allowed_atmosphere),
             forbidden_precursor_classes=tuple(args.forbid_precursor_class),
         )
+        if args.retro:
+            dag = planner.plan_dag(
+                PlanningProblem(target_formula=args.target, modality=args.modality, lab_constraints=constraints),
+                iterations=args.iterations,
+                rollout_count=args.rollout_count,
+                seed=args.seed,
+                judge_name=args.judge,
+                judge_config=judge_config,
+                max_depth=args.max_depth,
+                stock_min_frequency=args.stock_min_frequency,
+            )
+            _print_dag(dag)
+            output_path = Path(args.output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            dag_path = output_path / f"{args.target}_dag.json"
+            dag_path.write_text(json.dumps(dag.to_dict(), indent=2))
+            print(f"Saved: {dag_path}")
+            return 0
         routes = planner.plan(
             PlanningProblem(target_formula=args.target, modality=args.modality, lab_constraints=constraints),
             iterations=args.iterations,
@@ -330,6 +351,28 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     return 1
+
+
+def _print_dag(dag) -> None:
+    print(f"Target: {dag.target_formula} ({dag.modality})")
+    print(f"Solved (all leaves in stock): {dag.is_solved}")
+    print(f"DAG depth: {dag.depth}   nodes: {dag.node_count}")
+
+    def _walk(node, indent: int) -> None:
+        pad = "  " * indent
+        if node.in_stock:
+            print(f"{pad}- {node.target_formula} [in stock]")
+            return
+        if node.dangling and node.recipe is None:
+            print(f"{pad}- {node.target_formula} [DANGLING / unsolved]")
+            return
+        precursors = ", ".join(p.formula for p in node.recipe.precursors) if node.recipe else "n/a"
+        valid = node.recipe.hard_checks.valid if node.recipe else None
+        print(f"{pad}* {node.target_formula} <- {precursors}  (valid={valid})")
+        for child in node.children:
+            _walk(child, indent + 1)
+
+    _walk(dag.root, 1)
 
 
 def _build_judge_config(args) -> dict:

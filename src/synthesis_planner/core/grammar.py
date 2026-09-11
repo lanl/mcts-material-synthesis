@@ -7,8 +7,22 @@ from statistics import median
 
 from .schema import Action, OperationRecord, PlanningState, PrecursorRecord, RouteRecord
 
+# Elements treated as anion / non-metal framework when counting target cations
+# for template-family lookup. Kept local to avoid a core->data import (mirrors
+# data.stock.ANION_ELEMENTS).
+_ANION_ELEMENTS = frozenset({"O", "H", "C", "N", "S", "P", "F", "Cl", "Br", "I", "Se", "Te", "B"})
 
-def expand_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]]) -> list[Action]:
+
+def _cation_count(elements: tuple[str, ...]) -> int:
+    return len([el for el in elements if el not in _ANION_ELEMENTS])
+
+
+def expand_state(
+    state: PlanningState,
+    analogs: list[tuple[float, RouteRecord]],
+    candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]],
+    templates=None,
+) -> list[Action]:
     if state.problem.modality in {"hydrothermal", "precipitation"}:
         return _expand_solution_state(state, analogs, candidate_precursor_sets)
 
@@ -31,7 +45,7 @@ def expand_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]],
         ]
 
     if state.stage == "heating":
-        return _heating_actions(analogs)
+        return _heating_actions(analogs, state, templates)
 
     if state.stage == "finalize":
         return [
@@ -104,10 +118,10 @@ def apply_action(state: PlanningState, action: Action, analogs: list[tuple[float
     raise ValueError(f"Unknown action kind: {action.kind}")
 
 
-def rollout_completion(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]], rng) -> PlanningState:
+def rollout_completion(state: PlanningState, analogs: list[tuple[float, RouteRecord]], candidate_precursor_sets: list[tuple[float, tuple[PrecursorRecord, ...]]], rng, templates=None) -> PlanningState:
     current = state
     while not current.is_terminal:
-        actions = expand_state(current, analogs, candidate_precursor_sets)
+        actions = expand_state(current, analogs, candidate_precursor_sets, templates)
         if not actions:
             break
         total_prior = sum(action.prior for action in actions)
@@ -133,7 +147,7 @@ def _prep_ops(grinding_label: str, include_shape: bool = False) -> tuple[Operati
     return tuple(ops)
 
 
-def _heating_actions(analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
+def _heating_actions(analogs: list[tuple[float, RouteRecord]], state: PlanningState | None = None, templates=None) -> list[Action]:
     temperatures = []
     durations = []
     atmospheres = Counter()
@@ -154,6 +168,26 @@ def _heating_actions(analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
     median_temp = round(median(temperatures), 1) if temperatures else 900.0
     median_time = round(median(durations), 1) if durations else 8.0
     atmosphere = atmospheres.most_common(1)[0][0] if atmospheres else "air"
+
+    # Fold in the mined per-family condition schedule (WS-B) when available: it
+    # backfills a data-grounded temperature spread + atmosphere even where the
+    # analog set is sparse, widening the heating action space for the search.
+    schedule = None
+    if templates is not None and state is not None:
+        try:
+            schedule = templates.condition_schedule(state.target_class, _cation_count(state.target_elements))
+        except Exception:
+            schedule = None
+    if schedule is not None:
+        for temp in (schedule.temperature_p25, schedule.temperature_p50, schedule.temperature_p75):
+            if temp is not None:
+                temperatures.append(temp)
+        if schedule.temperature_p50 is not None and not atmospheres:
+            median_temp = schedule.temperature_p50
+        if schedule.dwell_h_median and not durations:
+            median_time = schedule.dwell_h_median
+        if schedule.top_atmosphere and not atmospheres:
+            atmosphere = schedule.top_atmosphere
 
     # Offer distinct, data-grounded single-step temperatures drawn from the
     # analog distribution (low / median / high) so the temperature setpoint is a
