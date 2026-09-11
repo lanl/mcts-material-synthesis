@@ -179,6 +179,13 @@ class EvaluationConfig:
     stock: Any = None
     stock_weight: float = 2.5
     retrieval_weight: float = 0.2
+    # Precursor-frequency prior (reframing): a duck-typed mapping
+    # {formula -> normalized frequency in [0,1]} mined from the (train) corpus.
+    # Folded into the precursor reward so MCTS is pulled toward the SAME common
+    # precursors a frequency-prior baseline would pick - search then differs on
+    # conditions/stages, so it can match-or-beat that baseline rather than trail
+    # it on precursor selection.
+    precursor_frequency: Any = None
 
 
 @dataclass(frozen=True)

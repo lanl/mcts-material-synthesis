@@ -19,7 +19,7 @@ def evaluate_state(state: PlanningState, analogs: list[tuple[float, RouteRecord]
     stoich = _stoich_score(hard_checks)
     validity = 1.0 if hard_checks.valid or not config.use_hard_checks else 0.0
     retrieval = max((score for score, _ in analogs), default=0.0) / 10.0
-    precursor = _precursor_score(state.precursors, state.problem.target_formula)
+    precursor = _precursor_score(state.precursors, state.problem.target_formula, config)
     condition = _condition_score(state)
     thermo = thermo_analysis.score
     judge = build_judge(
@@ -97,7 +97,11 @@ def _stock_score(precursors: tuple[PrecursorRecord, ...], config: EvaluationConf
     return in_stock / len(precursors)
 
 
-def _precursor_score(precursors: tuple[PrecursorRecord, ...], target_formula: str) -> float:
+def _precursor_score(
+    precursors: tuple[PrecursorRecord, ...],
+    target_formula: str,
+    config: EvaluationConfig | None = None,
+) -> float:
     classes = {precursor.class_name for precursor in precursors}
     target_lower = target_formula.lower()
     score = 0.4
@@ -109,7 +113,28 @@ def _precursor_score(precursors: tuple[PrecursorRecord, ...], target_formula: st
         score += 0.2
     if "nitride" in target_lower and "halide" not in classes:
         score += 0.05
-    return min(score, 1.0)
+    class_score = min(score, 1.0)
+
+    # Blend in the data-frequency prior when available: a route built from the
+    # corpus's most common precursors scores higher, aligning MCTS's precursor
+    # preference with a frequency-prior baseline (see EvaluationConfig).
+    freq_score = _precursor_frequency_score(precursors, config)
+    if freq_score is None:
+        return class_score
+    return min(1.0, 0.5 * class_score + 0.5 * freq_score)
+
+
+def _precursor_frequency_score(
+    precursors: tuple[PrecursorRecord, ...], config: EvaluationConfig | None
+) -> float | None:
+    """Mean normalized corpus frequency of the chosen precursor formulas, or None.
+
+    ``config.precursor_frequency`` is a duck-typed mapping formula -> [0,1].
+    """
+    fmap = getattr(config, "precursor_frequency", None) if config is not None else None
+    if not fmap or not precursors:
+        return None
+    return sum(float(fmap.get(p.formula, 0.0)) for p in precursors) / len(precursors)
 
 
 def _condition_score(state: PlanningState) -> float:

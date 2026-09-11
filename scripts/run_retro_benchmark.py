@@ -40,10 +40,11 @@ def main() -> int:
     print(f"saved {out}")
     print(f"LEAKAGE: {'CLEAN' if a['clean'] else 'LEAK n=' + str(a['n_leaked'])} | "
           f"targets={res['_n_targets']} | unparseable_skipped={res['_n_unparseable_targets_skipped']}")
-    cols = ["solve_rate", "mean_stock_coverage", "precursor_recall_at_1",
-            "precursor_recall_at_k", "class_recall_at_k", "mean_precursor_jaccard",
-            "condition_in_range_rate"]
-    hdr = ["method", "solve", "cov", "rec@1", f"rec@{args.top_k}", "cls@k", "jacc", "cond"]
+    cols = ["mean_synthesizability", "mean_operation_similarity", "condition_in_range_rate",
+            "stage_count_match_rate", "solve_rate", "precursor_recall_at_1",
+            "precursor_recall_at_k", "mean_precursor_jaccard"]
+    hdr = ["method", "synth", "op_sim", "cond", "stage", "solve", "rec@1",
+           f"rec@{args.top_k}", "jacc"]
     print("".join(f"{h:>8s}" if i else f"{h:<18s}" for i, h in enumerate(hdr)))
     for method, r in res["methods"].items():
         row = f"{method:<18s}" + "".join(f"{r[c]:8.2f}" for c in cols)

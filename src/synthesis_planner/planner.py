@@ -82,10 +82,16 @@ class SynthesisPlanner:
         stock=None,
         templates=None,
         retrieval: RetrievalIndex | None = None,
+        precursor_frequency=None,
     ) -> list[PlannedRoute]:
         # A prebuilt retrieval index can be injected to avoid rebuilding it per
         # node during DAG recursion (seam for Phase 3 / retro planning).
         retrieval = retrieval or RetrievalIndex(routes)
+        # Frequency prior over precursor formulas, mined from the (train) routes
+        # and folded into the reward so MCTS favors the same common precursors a
+        # frequency-prior baseline would; computed once unless injected.
+        if precursor_frequency is None:
+            precursor_frequency = _build_precursor_frequency(routes)
         analogs = retrieval.retrieve(problem.target_formula, top_k=12) if use_retrieval else []
         candidate_precursor_sets = retrieval.candidate_precursor_sets(problem.target_formula, analogs, max_sets=12)
 
@@ -104,6 +110,7 @@ class SynthesisPlanner:
                 use_hard_checks=use_hard_checks,
                 judge_config=judge_config or {},
                 stock=stock,
+                precursor_frequency=precursor_frequency,
             ),
             mp_client=self.mp_client,
             value_aggregation=value_aggregation,
@@ -299,6 +306,24 @@ class SynthesisPlanner:
         with path.open("w") as handle:
             json.dump([route.to_dict() for route in routes], handle, indent=2)
         return path
+
+
+def _build_precursor_frequency(routes) -> dict[str, float]:
+    """Map precursor formula -> normalized corpus frequency in [0,1].
+
+    Built from the supplied (train) routes only, so it stays leakage-safe when a
+    train-only route list is passed during benchmarking.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for route in routes:
+        for precursor in route.precursors:
+            counts[precursor.formula] += 1
+    if not counts:
+        return {}
+    max_count = max(counts.values())
+    return {formula: count / max_count for formula, count in counts.items()}
 
 
 def _select_portfolio(routes: list[PlannedRoute], top_k: int, diversity_threshold: float = 0.7) -> list[PlannedRoute]:
