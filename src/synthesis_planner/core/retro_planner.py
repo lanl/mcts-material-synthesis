@@ -100,3 +100,90 @@ def plan_retro(
 
     root = _expand(root_formula, depth=0)
     return SynthesisDAG(target_formula=root_formula, modality=modality, root=root, max_depth_cap=max_depth)
+
+
+# A genuine precursor-powder-forming step: the route precipitated and/or dried an
+# amorphous solid *before* the calcination. (A plain dissolve/mix or a
+# hydrothermal hold does not create a separable, dried precursor powder.)
+_PRECURSOR_FORMING_VERBS = frozenset({"precipitate", "dry"})
+
+
+def insert_solution_intermediate(node: DAGNode, is_in_stock: StockTest) -> DAGNode:
+    """Split a solution route at its calcination boundary into a depth-2 DAG (#2).
+
+    Co-precipitation / sol-gel / Pechini routes are natively multi-step: the
+    metal salts first form an amorphous **precursor powder / gel** (precipitate,
+    wash, dry), which is *then* calcined to the crystalline target. This models
+    that explicitly as::
+
+        target  <- calcine( precursor powder )          (this node's recipe)
+        precursor powder <- precipitate/gel( salts )     (intermediate node)
+        salts   in stock                                  (leaves)
+
+    If the recipe has no post-precipitation calcination (e.g. a hydrothermal run
+    that crystallises the product directly), the node is left unchanged - that is
+    the chemically faithful single-step case.
+    """
+    recipe = node.recipe
+    if recipe is None or not recipe.operations:
+        return node
+
+    ops = recipe.operations
+    # The calcination is the last heating step of the route.
+    heat_idx = None
+    for i, op in enumerate(ops):
+        if op.verb == "heat":
+            heat_idx = i
+    if heat_idx is None:
+        return node
+
+    pre_ops = ops[:heat_idx]
+    # Split only if an amorphous precursor powder was precipitated/dried BEFORE
+    # this calcination. This excludes a hydrothermal hold (heat precedes
+    # wash/dry) and a bare dissolve->heat, which are single-step crystallisations.
+    if not any(op.verb in _PRECURSOR_FORMING_VERBS for op in pre_ops):
+        return node
+
+    calcine_ops = ops[heat_idx:]
+    kind = "gel" if node.modality == "precipitation" else "powder"
+    intermediate = DAGNode(
+        target_formula=f"{node.target_formula} precursor ({kind})",
+        modality=node.modality,
+        depth=node.depth + 1,
+        is_intermediate=True,
+        operations=tuple(pre_ops),
+    )
+    # The metal salts are the buildable inputs consumed to form the intermediate.
+    for precursor in recipe.precursors:
+        in_stock = is_in_stock(precursor)
+        intermediate.children.append(
+            DAGNode(
+                precursor.formula,
+                node.modality,
+                node.depth + 2,
+                in_stock=in_stock,
+                dangling=not in_stock,
+            )
+        )
+    # This node now consumes the single intermediate via calcination.
+    node.children = [intermediate]
+    node.operations = tuple(calcine_ops)
+    return node
+
+
+def insert_solution_intermediates(dag: SynthesisDAG, is_in_stock: StockTest) -> SynthesisDAG:
+    """Apply :func:`insert_solution_intermediate` to every recipe node in the DAG."""
+    if dag.modality not in {"hydrothermal", "precipitation"}:
+        return dag
+
+    def _walk(node: DAGNode) -> None:
+        # Only split nodes that still hold their own salt-precursor recipe (i.e.
+        # have not already been restructured).
+        if node.recipe is not None and not (len(node.children) == 1 and node.children[0].is_intermediate):
+            insert_solution_intermediate(node, is_in_stock)
+        for child in node.children:
+            if not child.is_intermediate:
+                _walk(child)
+
+    _walk(dag.root)
+    return dag

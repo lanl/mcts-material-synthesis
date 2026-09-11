@@ -313,7 +313,7 @@ def _expand_solution_state(state: PlanningState, analogs: list[tuple[float, Rout
     if state.stage == "reaction":
         return _solution_reaction_actions(state.problem.modality, analogs)
     if state.stage == "postprocess":
-        return _solution_postprocess_actions(state.problem.modality, analogs)
+        return _solution_postprocess_actions(state.problem.modality, analogs, state)
     if state.stage == "finalize":
         return [
             Action("finalize", "terminate", 1.0, ()),
@@ -463,27 +463,31 @@ def _solution_reaction_actions(modality: str, analogs: list[tuple[float, RouteRe
     ]
 
 
-def _solution_postprocess_actions(modality: str, analogs: list[tuple[float, RouteRecord]]) -> list[Action]:
-    base = [
-        Action(
-            kind="set_solution_postprocess",
-            label="wash -> dry",
-            prior=1.0,
-            payload=(
-                OperationRecord(verb="wash", source_label="wash"),
-                OperationRecord(verb="dry", source_label="dry"),
-            ),
-        )
-    ]
+# Target classes that are crystalline phases and therefore essentially always
+# require a calcination of the as-precipitated/dried gel to form the product.
+_CALCINATION_REQUIRED_CLASSES = frozenset({"oxide", "phosphate", "nitride", "sulfide", "halide", "other"})
+
+
+def _solution_postprocess_actions(
+    modality: str,
+    analogs: list[tuple[float, RouteRecord]],
+    state: PlanningState | None = None,
+) -> list[Action]:
+    wash_dry = (
+        OperationRecord(verb="wash", source_label="wash"),
+        OperationRecord(verb="dry", source_label="dry"),
+    )
     if modality == "hydrothermal":
-        base.append(
+        # A hydrothermal hold often crystallises the product directly, so a final
+        # anneal is optional (lower prior).
+        return [
+            Action("set_solution_postprocess", "wash -> dry", 1.0, wash_dry),
             Action(
-                kind="set_solution_postprocess",
-                label="wash -> dry -> anneal",
-                prior=0.7,
-                payload=(
-                    OperationRecord(verb="wash", source_label="wash"),
-                    OperationRecord(verb="dry", source_label="dry"),
+                "set_solution_postprocess",
+                "wash -> dry -> anneal",
+                0.7,
+                wash_dry
+                + (
                     OperationRecord(
                         verb="heat",
                         temperature_c=_range(400.0),
@@ -491,24 +495,32 @@ def _solution_postprocess_actions(modality: str, analogs: list[tuple[float, Rout
                         source_label="post-anneal",
                     ),
                 ),
-            )
-        )
-    else:
-        base.append(
-            Action(
-                kind="set_solution_postprocess",
-                label="wash -> dry -> calcine",
-                prior=0.75,
-                payload=(
-                    OperationRecord(verb="wash", source_label="wash"),
-                    OperationRecord(verb="dry", source_label="dry"),
-                    OperationRecord(
-                        verb="heat",
-                        temperature_c=_range(500.0),
-                        time_h=_range(3.0, units="h"),
-                        source_label="calcine",
-                    ),
-                ),
-            )
-        )
-    return base
+            ),
+        ]
+
+    # Precipitation / sol-gel: the dried solid is an amorphous hydroxide / oxalate
+    # / gel, NOT the crystalline target. Calcination is required to form the
+    # product, so it is the dominant action; a bare wash->dry (target already
+    # crystalline as-precipitated) is the low-prior exception.
+    needs_calcination = state is None or state.target_class in _CALCINATION_REQUIRED_CLASSES
+    calcine = Action(
+        "set_solution_postprocess",
+        "wash -> dry -> calcine",
+        1.0 if needs_calcination else 0.75,
+        wash_dry
+        + (
+            OperationRecord(
+                verb="heat",
+                temperature_c=_range(500.0),
+                time_h=_range(3.0, units="h"),
+                source_label="calcine",
+            ),
+        ),
+    )
+    wash_dry_only = Action(
+        "set_solution_postprocess",
+        "wash -> dry",
+        0.5 if needs_calcination else 1.0,
+        wash_dry,
+    )
+    return [calcine, wash_dry_only] if needs_calcination else [wash_dry_only, calcine]

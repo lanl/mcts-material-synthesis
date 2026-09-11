@@ -136,7 +136,7 @@ class SynthesisPlanner:
         loaded/mined once and threaded into the inner scorer/grammar so every
         node's recipe is rewarded for bottoming out in stock.
         """
-        from .core.retro_planner import plan_retro
+        from .core.retro_planner import insert_solution_intermediates, plan_retro
         from .data.stock import load_or_build_stock
 
         self.ensure_processed_data()
@@ -174,7 +174,7 @@ class SynthesisPlanner:
             # itself a buildable stock commodity.
             return formula in known_targets and not stock.contains(formula)
 
-        return plan_retro(
+        dag = plan_retro(
             problem.target_formula,
             problem.modality,
             plan_single=plan_single,
@@ -182,6 +182,9 @@ class SynthesisPlanner:
             is_recursion_candidate=is_recursion_candidate,
             max_depth=max_depth,
         )
+        # #2: for solution modalities, expose the native precipitate/gel ->
+        # calcine multi-step structure as explicit intermediate DAG nodes.
+        return insert_solution_intermediates(dag, stock.contains)
 
     def score_route_record(
         self,

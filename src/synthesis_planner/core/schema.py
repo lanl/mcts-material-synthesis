@@ -244,6 +244,13 @@ class DAGNode:
     dangling: bool = False
     recipe: "PlannedRoute | None" = None
     children: list["DAGNode"] = field(default_factory=list)
+    # An intermediate node (e.g. the as-precipitated gel / dried precursor powder
+    # in a sol-gel or co-precipitation route) is a real multi-step stage that has
+    # no balanceable crystalline formula of its own. It carries its formation
+    # operations directly and is considered valid when its inputs bottom out in
+    # stock (its correctness is enforced by the parent route's hard checks).
+    is_intermediate: bool = False
+    operations: tuple = ()
 
     @property
     def is_leaf(self) -> bool:
@@ -287,6 +294,10 @@ class SynthesisDAG:
         return all(self._node_valid(node) for node in self._internal_nodes())
 
     def _node_valid(self, node: DAGNode) -> bool:
+        # Intermediate stages (amorphous gel/precursor powder) have no crystalline
+        # formula to balance; their validity is carried by the parent route.
+        if node.is_intermediate:
+            return True
         if node.recipe is None:
             return False
         return node.recipe.hard_checks.valid
@@ -329,7 +340,11 @@ def _dag_node_to_dict(node: DAGNode) -> dict[str, Any]:
         "depth": node.depth,
         "in_stock": node.in_stock,
         "dangling": node.dangling,
+        "is_intermediate": node.is_intermediate,
         "precursors": [p.formula for p in node.recipe.precursors] if node.recipe else [],
+        "operations": [op.verb for op in node.operations] if node.is_intermediate else (
+            [op.verb for op in node.recipe.operations] if node.recipe else []
+        ),
         "valid": node.recipe.hard_checks.valid if node.recipe else None,
         "children": [_dag_node_to_dict(child) for child in node.children],
     }
