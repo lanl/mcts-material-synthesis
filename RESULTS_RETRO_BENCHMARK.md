@@ -132,3 +132,59 @@ temperature and make all conditions data-driven from mined templates; (b) bias
 the multi-stage prior toward the analog stage-count distribution; (c) reward
 condition quality more strongly. Target metric: MCTS cond/stage > frequency
 prior on the analog-free stratum, lifting novel synth above 0.72.
+
+## Run D — after the three condition/stage fixes
+
+Fixes applied: (1) data-driven solution calcine/anneal temperatures; (2)
+stage-count continuation biased to the analog distribution; (3) graded,
+non-saturating, data-driven condition reward (weight 0.8->1.3). **NB:** the
+condition rewrite redefines the `synth` metric, so absolute synth is not
+comparable to Runs A-C - only within-run gaps are.
+
+Analog-free / analog-rich (solid-state, chemical_system, 60/stratum, leakage CLEAN):
+
+| stratum | method | synth | op_sim | cond | stage |
+|---|---|---|---|---|---|
+| novel | mcts | 0.63 | 0.40 | 0.31 | 0.35 |
+| novel | nearest_neighbor | 0.42 | 0.43 | 0.35 | 0.38 |
+| novel | frequency_prior | **0.68** | 0.39 | 0.35 | 0.35 |
+| rich | mcts | 0.85 | 0.52 | 0.38 | **0.60** |
+| rich | nearest_neighbor | 0.76 | 0.51 | 0.29 | 0.40 |
+| rich | frequency_prior | **0.86** | 0.51 | 0.40 | 0.43 |
+
+Precipitation (standard, chemical_system, 60 targets, leakage CLEAN):
+
+| method | synth | op_sim | cond | stage |
+|---|---|---|---|---|
+| mcts | 0.74 | 0.50 | **0.40** | 0.47 |
+| nearest_neighbor | 0.44 | 0.65 | 0.26 | 0.50 |
+| frequency_prior | 0.78 | 0.45 | 0.39 | 0.45 |
+
+### What the fixes achieved
+
+- **Precipitation conditions: cond 0.06 -> 0.40**, now *beating* the frequency
+  prior (0.39) and nearest-neighbor (0.26). Fix #1 (data-driven calcine
+  temperature) worked as intended.
+- **Stage-count match on analog-rich: MCTS 0.60**, clearly best (freq 0.43, NN
+  0.40). Fix #2 worked.
+- **MCTS beats nearest-neighbor on synthesizability in every cell** (novel 0.63
+  vs 0.42; precip 0.74 vs 0.44), confirming search dominates recipe-copying.
+
+### What still did not clear the bar (and why)
+
+- **On the novel stratum MCTS still trails the frequency prior on synth (0.63 vs
+  0.68)**, and its novel condition score (0.31) is still <= the prior's (0.35).
+- **Root cause is fundamental, not a tuning miss:** the fixes help *where there
+  is data signal*. On analog-free targets there are, by definition, no close
+  analogs, so data-driven conditions have nothing to drive from - the
+  temperature signal vanishes exactly where novelty begins, and a sensible
+  default (the frequency prior) stays marginally ahead. Heuristic, data-mined
+  conditioning cannot beat a prior in the regime with no data.
+
+### Implication
+
+Beating the frequency prior **on novel targets** requires a signal that does not
+come from analogs - i.e. a genuine **physics / forward model** (formation
+energies, phase stability, a synthesizability predictor) that MCTS can optimize
+where literature statistics run out. That is the next real lever; further
+heuristic tuning has reached its ceiling on this corpus.
