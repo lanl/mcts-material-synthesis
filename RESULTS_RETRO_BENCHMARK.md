@@ -85,3 +85,50 @@ To make MCTS genuinely *win*, the objective must be one retrieval/frequency
 The current benchmark, harness, leakage control, and reward are sound and
 reusable; the open scientific question is choosing an objective where search
 beats a prior.
+
+## Run C — analog-free vs analog-rich stratification (solid-state, chemical_system, leakage CLEAN)
+
+Test targets split by retrieval support (similarity to the nearest train
+analog): the **analog-free / novel** stratum (bottom third, support 0.07-2.0)
+has no close recipe to copy; the **analog-rich** stratum (top third, support
+~3.55) does. 60 targets per stratum.
+
+| stratum | method | synth | op_sim | cond | stage | solve | rec@1 | jacc |
+|---|---|---|---|---|---|---|---|---|
+| novel | **mcts** | 0.69 | 0.39 | 0.28 | 0.30 | 0.85 | 0.00 | 0.08 |
+| novel | nearest_neighbor | 0.50 | 0.45 | 0.38 | 0.37 | 0.88 | 0.00 | 0.21 |
+| novel | frequency_prior | **0.72** | 0.40 | 0.35 | 0.35 | 0.83 | 0.00 | 0.07 |
+| novel | random | 0.42 | 0.36 | 0.13 | 0.23 | 0.97 | 0.00 | 0.01 |
+| rich | mcts | 0.91 | 0.54 | 0.37 | **0.58** | 0.98 | 0.15 | 0.46 |
+| rich | nearest_neighbor | 0.86 | 0.54 | 0.31 | 0.38 | 0.97 | 0.03 | 0.53 |
+| rich | frequency_prior | **0.93** | 0.50 | 0.44 | 0.42 | 1.00 | 0.30 | 0.58 |
+| rich | random | 0.45 | 0.45 | 0.24 | 0.37 | 0.97 | 0.00 | 0.05 |
+
+### What this shows (the clearest result so far)
+
+1. **Nearest-neighbor collapses on novel targets** (synth 0.86 -> 0.50), exactly
+   as predicted: recipe-copying fails with no close analog.
+2. **MCTS holds up far better and clearly beats nearest-neighbor on novel
+   targets** (synth 0.69 vs 0.50; drop of only 0.22 vs NN's 0.36). This is the
+   real "search reasons from chemistry where retrieval can't" signal - MCTS's
+   headline win over the retrieval baseline.
+3. **But the frequency prior does NOT collapse and still marginally leads MCTS**
+   even on novel targets (0.72 vs 0.69). Element-level precursor statistics
+   transfer to novel compositions (a novel oxide still uses common oxide/
+   carbonate precursors), so the frequency prior is the true baseline to beat -
+   not retrieval.
+4. **Why MCTS still trails the frequency prior: its condition search is *worse*
+   than the prior's static defaults** (novel cond 0.28 vs 0.35). Since MCTS
+   already inherits the frequency prior for precursors, the only way it beats the
+   prior is by making conditions/stages *better* - and right now the condition
+   search subtracts value.
+
+### Actionable conclusion
+
+The competitor is the **frequency prior**, and MCTS ties/loses to it only because
+its **condition/stage search underperforms simple data-driven defaults**. Concrete
+path to an outright MCTS win: (a) fix the hard-coded precipitation calcine
+temperature and make all conditions data-driven from mined templates; (b) bias
+the multi-stage prior toward the analog stage-count distribution; (c) reward
+condition quality more strongly. Target metric: MCTS cond/stage > frequency
+prior on the analog-free stratum, lifting novel synth above 0.72.
