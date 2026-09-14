@@ -257,10 +257,19 @@ implement `DiffSynConditionGenerator` against the real API.
   - The diff **`model.pt` is NOT in git** — download from Dropbox (per repo README):
     `wget -O runs/diff/system/run1/model.pt "https://www.dropbox.com/scl/fi/vmf5ag87vszlikmlsnlg4/model.pt?rlkey=9p1d2ht0qxr32of0xizsmqxat&st=obgh0a2n&dl=1"`
     (repo data DOI is Zenodo 10.5281/zenodo.17645370, not figshare.)
-  - Importing `models/diffusion.py` pulls **torchvision, matplotlib, seaborn, tqdm**
-    (vestigial top-level imports) on top of torch/einops — install these into
-    `diffsyn-venv`. Our adapter deliberately does NOT import `eval.py` (which also
-    needs `torch_geometric`), sidestepping that heavy/fragile dep.
+  - Importing `models/diffusion.py` pulls a chain of **vestigial** (plotting/train)
+    top-level imports on top of torch/einops. Full set discovered by iterating the
+    smoke: `torchvision matplotlib seaborn tqdm scipy pyrolite accelerate
+    ema_pytorch` (all pip-installable). Our adapter deliberately does NOT import
+    `eval.py` (which also needs `torch_geometric`), sidestepping that fragile dep.
+    Turnkey: `uv pip install --python <diffsyn-venv> torchvision matplotlib seaborn
+    tqdm scipy pyrolite accelerate ema_pytorch` (torchvision via the cpu index).
+  - **sklearn pickle-compat:** the repo pins `scikit-learn==1.1.2`; the
+    `data/scalers/*.pkl` + `ZeoSynGen_dataset.pkl` (quantile transformers) were
+    pickled with it. Our env has a newer sklearn — if `.transform` /
+    `.inverse_transform` errors or warns, pin `scikit-learn==1.1.2` (may also need
+    `numpy==1.26 pandas==1.4.3`) OR bypass: run the model to get the raw 12-dim
+    output and skip the inverse quantile-transform for a "model-runs" smoke.
   - `git checkout` **aborts the whole command on one bad pathspec** — that's why the
     first blob fetch pulled nothing; list only paths that exist in git.
   - Dataset pickle class: `data/ZeoSynGen_dataset.pkl` unpickles a custom class

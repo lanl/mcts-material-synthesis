@@ -124,18 +124,26 @@ class StubConditionGenerator:
 @contextmanager
 def _repo_on_path(repo_root: str):
     """Run with ``repo_root`` as cwd and on ``sys.path`` (zeosyn_gen uses relative
-    ``open('data/...')`` / ``import eval`` / ``from models...``)."""
+    ``open('data/...')`` / ``import eval`` / ``from models...``).
+
+    Also puts ``repo_root/data`` on the path: ``ZeoSynGen_dataset.pkl`` was pickled
+    with ``data/`` as the working dir, so its class references the module as bare
+    ``utils`` (i.e. ``data/utils.py``), which only resolves if ``data/`` is on
+    ``sys.path``.
+    """
     prev_cwd = os.getcwd()
-    added = repo_root not in sys.path
+    extra = [repo_root, os.path.join(repo_root, "data")]
+    added = [p for p in extra if p not in sys.path]
     try:
-        if added:
-            sys.path.insert(0, repo_root)
+        for p in reversed(added):
+            sys.path.insert(0, p)
         os.chdir(repo_root)
         yield
     finally:
         os.chdir(prev_cwd)
-        if added and repo_root in sys.path:
-            sys.path.remove(repo_root)
+        for p in added:
+            if p in sys.path:
+                sys.path.remove(p)
 
 
 class DiffSynConditionGenerator:

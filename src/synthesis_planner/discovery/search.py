@@ -116,6 +116,7 @@ class DiffSynDiscoverySearch:
         config: Optional[SearchConfig] = None,
         mineralizers: Sequence[MineralizerRoute] = DEFAULT_MINERALIZERS,
         spec: ConditionSpec = DEFAULT_CONDITION_SPEC,
+        reward=None,
     ):
         if not osda_pool:
             raise ValueError("osda_pool must be non-empty")
@@ -126,11 +127,19 @@ class DiffSynDiscoverySearch:
         self.config = config or SearchConfig()
         self.mineralizers = list(mineralizers)
         self.spec = spec
+        # Optional pluggable multi-objective reward (discovery.reward.DiscoveryReward:
+        # stability + DiffSyn feasibility + property + novelty). When None, the
+        # search uses its built-in feasibility x novelty x realism reward. Any
+        # object exposing ``.score(target, recipe, generator) -> obj-with-.total``
+        # qualifies (duck-typed) so the two reward shapes are interchangeable.
+        self.reward = reward
         self.rng = random.Random(self.config.seed)
         self._evaluated: list[_Node] = []  # all terminal condition nodes (for portfolio)
 
     # -- reward ------------------------------------------------------------
-    def _reward(self, target: ZeoliteTarget, recipe: ZeoliteRecipe) -> RewardBreakdown:
+    def _reward(self, target: ZeoliteTarget, recipe: ZeoliteRecipe):
+        if self.reward is not None:
+            return self.reward.score(target, recipe, self.generator)
         c = self.config
         feas = self.oracle.score(target, recipe.osda, recipe.conditions)
         nov = self.novelty_index.novelty(recipe)

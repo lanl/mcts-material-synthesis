@@ -25,6 +25,14 @@ from .oracle import (
     FeasibilityOracle,
     binding_energy_favorability,
 )
+from .reward import (
+    DiffSynFeasibilityScorer,
+    DiscoveryReward,
+    DiscoveryRewardBreakdown,
+    HullStabilityProvider,
+    PoreSizePropertyOracle,
+    ZeoliteStabilityOracle,
+)
 from .search import DiffSynDiscoverySearch, RewardBreakdown, SearchConfig
 from .zeolite_schema import (
     CONDITION_VARIABLES,
@@ -50,6 +58,12 @@ __all__ = [
     "DiffSynDiscoverySearch",
     "SearchConfig",
     "RewardBreakdown",
+    "DiscoveryReward",
+    "DiscoveryRewardBreakdown",
+    "ZeoliteStabilityOracle",
+    "DiffSynFeasibilityScorer",
+    "PoreSizePropertyOracle",
+    "HullStabilityProvider",
     "ZeoliteTarget",
     "OSDA",
     "MineralizerRoute",
