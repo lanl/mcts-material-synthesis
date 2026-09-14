@@ -253,11 +253,25 @@ implement `DiffSynConditionGenerator` against the real API.
     `data/zeolite_descriptors.csv`, `data/scalers/*.pkl`, an OSDA feature CSV).
 
   ### Phase 2 — NEXT ACTIONS (real DiffSyn inference on CPU)
-  1. In `<scratchpad>/zeosyn_gen`, fetch the needed blobs (git is auto-gc-thrashing;
-     `git config gc.auto 0` first): `git checkout HEAD -- runs/diff/system/run1/model.pt
-     data/ZeoSynGen_dataset.pkl data/zeolite_descriptors.csv data/scalers
-     data/2024-10-02_K222_and_CHA_OSDA_features.csv data/syn_variables.py
-     models/ eval.py`. (Watch home quota — the clone lives on lustre scratch, good.)
+  **CONCRETE FACTS discovered 2026-09-14 (read before retrying):**
+  - The diff **`model.pt` is NOT in git** — download from Dropbox (per repo README):
+    `wget -O runs/diff/system/run1/model.pt "https://www.dropbox.com/scl/fi/vmf5ag87vszlikmlsnlg4/model.pt?rlkey=9p1d2ht0qxr32of0xizsmqxat&st=obgh0a2n&dl=1"`
+    (repo data DOI is Zenodo 10.5281/zenodo.17645370, not figshare.)
+  - Importing `models/diffusion.py` pulls **torchvision, matplotlib, seaborn, tqdm**
+    (vestigial top-level imports) on top of torch/einops — install these into
+    `diffsyn-venv`. Our adapter deliberately does NOT import `eval.py` (which also
+    needs `torch_geometric`), sidestepping that heavy/fragile dep.
+  - `git checkout` **aborts the whole command on one bad pathspec** — that's why the
+    first blob fetch pulled nothing; list only paths that exist in git.
+  - Dataset pickle class: `data/ZeoSynGen_dataset.pkl` unpickles a custom class
+    exposing `.ratio_names/.cond_names/.qts`; its defining module must be importable
+    at load. Location still TBD (grep the repo for `ratio_names`/`class .*Dataset`);
+    if it lives in a notebook, replicate a minimal class or extract `.qts` directly.
+  1. In `<scratchpad>/zeosyn_gen` (`git config gc.auto 0` first) fetch the in-git
+     blobs: `git checkout HEAD -- data/ZeoSynGen_dataset.pkl data/zeolite_descriptors.csv
+     data/scalers data/2024-10-02_K222_and_CHA_OSDA_features.csv data/syn_variables.py
+     data/iza_codes.py models/` then wget `model.pt` (URL above). (Clone is on lustre
+     scratch — good, avoids the home quota.)
   2. Sanity-check versions: the pickled scalers/`ZeoSynGen_dataset.pkl` were made
      with some sklearn version; if unpickling errors, match sklearn in the
      `diffsyn-venv`. `model.pt` is a plain state_dict (map_location=cpu handles device).
