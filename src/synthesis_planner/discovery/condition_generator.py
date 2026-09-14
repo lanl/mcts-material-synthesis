@@ -180,12 +180,22 @@ class DiffSynConditionGenerator:
         cond_scale: float = 0.75,
         spec: ConditionSpec = DEFAULT_CONDITION_SPEC,
         osda_feature_csv: str = "data/2024-10-02_K222_and_CHA_OSDA_features.csv",
+        sampling_timesteps: Optional[int] = None,
+        num_threads: Optional[int] = None,
     ):
+        # ``sampling_timesteps`` < the model's 1000 enables DDIM (few-step)
+        # sampling -- essential on CPU, where full 1000-step DDPM sampling is
+        # ~unusably slow (observed >1h and thread-thrashing). ~50 is a good CPU
+        # default; None keeps the model's DDPM default (use only on GPU).
+        # ``num_threads`` caps torch intra-op threads to avoid oversubscription
+        # thrashing on shared login nodes.
         self.repo_root = repo_root
         self.device = device
         self.cond_scale = cond_scale
         self.spec = spec
         self.osda_feature_csv = osda_feature_csv
+        self.sampling_timesteps = sampling_timesteps
+        self.num_threads = num_threads
         self._model = None
         self._configs = None
         self._zeo_df = None
@@ -206,6 +216,9 @@ class DiffSynConditionGenerator:
         import pandas as pd
         import torch
 
+        if self.num_threads is not None:
+            torch.set_num_threads(self.num_threads)
+
         with _repo_on_path(self.repo_root):
             from models.diffusion import GaussianDiffusion1D, Unet1D  # type: ignore
             from data.syn_variables import zeo_cols, osda_cols  # type: ignore
@@ -222,9 +235,15 @@ class DiffSynConditionGenerator:
                 osda_feat_dims=mp["osda_feat_dims"], cond_drop_prob=mp["cond_drop_prob"],
                 dropout=mp["dropout"],
             )
-            model = GaussianDiffusion1D(
-                unet, seq_length=mp["seq_length"], timesteps=mp["timesteps"], objective="pred_v",
-            ).to(self.device)
+            gd_kwargs = dict(seq_length=mp["seq_length"], timesteps=mp["timesteps"], objective="pred_v")
+            if self.sampling_timesteps is not None:
+                gd_kwargs["sampling_timesteps"] = self.sampling_timesteps  # -> DDIM few-step
+            try:
+                model = GaussianDiffusion1D(unet, **gd_kwargs).to(self.device)
+            except TypeError:
+                # Older signature without sampling_timesteps: fall back to DDPM.
+                gd_kwargs.pop("sampling_timesteps", None)
+                model = GaussianDiffusion1D(unet, **gd_kwargs).to(self.device)
             ckpt = f"runs/{self.MODEL_TYPE}/{self.SPLIT}/{self.FNAME}/model.pt"
             model.load_state_dict(torch.load(ckpt, map_location="cpu"))
             model.eval()

@@ -40,9 +40,15 @@ def main() -> None:
         "--osda", default="C1COCCN2CCOCCOCCN(CCO1)CCOCCOCC2", help="OSDA SMILES (must be in the CSV)"
     )
     ap.add_argument("--n", type=int, default=16)
+    ap.add_argument("--sampling-timesteps", type=int, default=50,
+                    help="DDIM few-step sampling; full 1000-step DDPM is ~unusable on CPU")
+    ap.add_argument("--threads", type=int, default=4, help="cap torch intra-op threads")
     args = ap.parse_args()
 
-    gen = DiffSynConditionGenerator(repo_root=args.repo_root, device="cpu")
+    gen = DiffSynConditionGenerator(
+        repo_root=args.repo_root, device="cpu",
+        sampling_timesteps=args.sampling_timesteps, num_threads=args.threads,
+    )
     target, osda = ZeoliteTarget(args.zeolite), OSDA(smiles=args.osda)
 
     print(f"[1] Sampling {args.n} conditions for {args.zeolite} + OSDA via frozen DiffSyn (CPU)...")
