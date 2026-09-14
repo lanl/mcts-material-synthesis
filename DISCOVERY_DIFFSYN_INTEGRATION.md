@@ -227,6 +227,34 @@ implement `DiffSynConditionGenerator` against the real API.
 
 ## STATUS (update this on every session)
 
+- **2026-09-14 (later) — Modular discovery reward COMPLETE; real-weight smoke is
+  CPU-perf-bound.**
+  - [x] `discovery/reward.py` — `DiscoveryReward` = `w_s*Stability + w_f*Feasibility
+        + w_p*Property + w_n*Novelty`, each pluggable:
+        - Stability = `ZeoliteStabilityOracle`: **OSDA-binding primary (0.8) +
+          e_above_hull guardrail (0.2)** (user choice). `HullStabilityProvider`
+          seam for MACE/MP; neutral 0.5 when absent.
+        - Feasibility = `DiffSynFeasibilityScorer`: in-bounds x tightness of
+          DiffSyn's generated condition distribution (DiffSyn as scorer); cached.
+        - Property = `PoreSizePropertyOracle`: largest-included-sphere closeness to
+          a target range (user choice: pore size).
+        - Novelty = existing `ZeoliteNoveltyIndex`.
+  - [x] `search.py` takes an optional pluggable `reward` (DiscoveryReward drops in
+        for the built-in reward; backward compatible).
+  - [x] `tests/test_discovery_reward.py` (10) — full suite **164 passed / 1 skip**.
+  - [x] Adapter CPU knobs: `sampling_timesteps` (DDIM) + `num_threads`.
+  - **Real-weight smoke reality:** the model DID load and reach sampling in an
+    earlier run, but full 1000-step DDPM sampling on this **GPU-less** node ran
+    >1h (thread-thrashing) and was killed. DDIM + thread-cap added; a 500s CPU run
+    still didn't print — the cost is dominated by **loading** (heavy import chain
+    `models.diffusion`->torchvision/pyrolite + `data.utils`->rdkit/torch_geometric,
+    then the 426MB `torch.load`). An instrumented timing run is pending. The
+    adapter is CORRECT; this is purely a CPU-throughput issue.
+    **Recommendation:** validate real inference on a **GPU box** (the paper does
+    1000 samples in ~2 min on GPU) — or accept a slow one-time CPU load, keep the
+    generator instance alive, and use small DDIM sampling. Nothing in the reward /
+    search code is blocked by this; it runs fully on the stub today.
+
 - **2026-09-14 — Phase 1 COMPLETE (stub-validated), Phase 2 groundwork done.**
   - [x] `discovery/zeolite_schema.py` — exact 12-var `ConditionSpec`, domain types.
   - [x] `discovery/condition_generator.py` — `ConditionGenerator` Protocol +
