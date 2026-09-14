@@ -78,6 +78,10 @@ _ANIONS = frozenset({"O", "H", "C", "N", "S", "P", "F", "Cl", "Br", "I"})
 # kJ/mol scale for mapping reaction enthalpy to a bounded [0,1] favorability.
 _FAVORABILITY_SCALE_KJ = 300.0
 
+# eV/atom scale for mapping energy-above-hull to a bounded [0,1] stability score.
+# ~0.1 eV/atom is a common "metastable but plausibly synthesizable" threshold.
+_STABILITY_SCALE_EV = 0.1
+
 
 def formation_enthalpy(formula: str, provider: Optional[Any] = None) -> tuple[Optional[float], bool]:
     """Return (dHf in kJ/mol, is_estimated) for a formula, or (None, False).
@@ -180,3 +184,37 @@ def thermo_favorability(delta_h_kj: Optional[float], computable: bool) -> float:
     if not computable or delta_h_kj is None:
         return 0.5
     return 1.0 / (1.0 + math.exp(delta_h_kj / _FAVORABILITY_SCALE_KJ))
+
+
+def target_stability(formula: str, provider: Optional[Any] = None) -> tuple[Optional[float], bool]:
+    """Return (energy_above_hull in eV/atom, available) for a target formula.
+
+    Reads ``provider.energy_above_hull(formula)`` when the provider exposes it
+    (the real MP/DFT stability signal). Returns (None, False) otherwise -- the
+    offline table has no hull information, so this is *only* meaningful with a
+    real-energy provider (a populated CachedThermoProvider or a live MP client).
+    """
+    if provider is None or not hasattr(provider, "energy_above_hull"):
+        return None, False
+    try:
+        value = provider.energy_above_hull(formula)
+    except Exception:
+        value = None
+    if value is None:
+        return None, False
+    return float(value), True
+
+
+def stability_favorability(e_above_hull_ev: Optional[float], available: bool) -> float:
+    """Map energy-above-hull (eV/atom) to a bounded [0,1] makeability score.
+
+    On-hull (0 eV) -> 1.0; larger e_above_hull decays toward 0; neutral 0.5 when
+    unavailable so an unknown never penalizes. NB: for a *fixed target* this is
+    constant across all candidate routes, so it discriminates *targets*
+    (prospective makeability screening / cross-target ranking), not routes within
+    one target. It is deliberately not folded into the per-route retrospective
+    reward, where it would be a route-invariant constant.
+    """
+    if not available or e_above_hull_ev is None:
+        return 0.5
+    return math.exp(-max(0.0, e_above_hull_ev) / _STABILITY_SCALE_EV)

@@ -230,3 +230,40 @@ physics rewards.** Beating the prior on novel targets requires a *real* stabilit
 signal - Materials Project / DFT / ML formation energies via the (now wired)
 `physics_provider` seam - or a change of objective (property optimization /
 prospective validation) rather than literature-recall.
+
+## Run F - making the real-energy seam correct and populate-ready
+
+Auditing the seam I claimed was "ready" in Run E surfaced a unit/semantics bug:
+`core/physics.py` sums formation enthalpies in **kJ/mol per formula unit**, but
+`data/materials_project.py` reports formation energy in **eV/atom** and its most
+novel-discriminating field, `energy_above_hull`, is not a reaction enthalpy at
+all. Plugging MP in naively would have fed wrong-unit numbers into the reaction
+sum. Fixed and hardened (no benchmark-number change - this environment is
+air-gapped with no MP key, so there is still no real data to run against):
+
+- **`CachedThermoProvider`** (offline JSON energy cache) and **`MPThermoProvider`**
+  (live MP adapter), both implementing the seam contract
+  `formation_enthalpy(formula) -> kJ/mol f.u.` with a correct
+  `eV/atom -> kJ/mol` conversion (`E_f * n_atoms * 96.485`), plus
+  `energy_above_hull(formula) -> eV/atom`.
+- **`build_thermo_cache(client, formulas, path)`** - the one-shot populate path:
+  run once on a networked machine with an MP key, then every benchmark runs
+  offline off the JSON cache.
+- **`target_stability` / `stability_favorability`** (physics.py): a real-energy
+  makeability screen from `energy_above_hull` (on-hull -> 1.0, decaying; neutral
+  0.5 when unavailable). Documented honestly as **route-invariant for a fixed
+  target** - it discriminates *targets* (prospective screening), not routes
+  within a target - so it is deliberately *not* folded into the per-route
+  retrospective reward, where it would be a constant.
+- Tests (`tests/test_thermo_provider.py`, +stability tests in
+  `tests/test_physics.py`): 139 pass / 1 skip. Proven end-to-end that a
+  real-energy provider overrides the offline table inside `reaction_enthalpy` and
+  changes the route reward through the full scoring path.
+
+### Honest status
+
+The reaction-enthalpy seam is now genuinely correct and one-command
+populate-ready; the earlier "ready" claim was premature. Producing the
+novel-target *result* still requires (a) a networked machine + MP key to build
+the cache, or (b) an external energy dump dropped into `CachedThermoProvider`.
+Absolute benchmark numbers are unchanged from Run E.

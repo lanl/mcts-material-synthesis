@@ -3,6 +3,8 @@
 from synthesis_planner.core.physics import (
     formation_enthalpy,
     reaction_enthalpy,
+    stability_favorability,
+    target_stability,
     thermo_favorability,
 )
 from synthesis_planner.core.schema import (
@@ -82,3 +84,38 @@ def test_reaction_enthalpy_not_computable_without_balance():
     )
     delta_h, computable = reaction_enthalpy(state, None)
     assert delta_h is None and computable is False
+
+
+# --- target-stability screen (real-energy provider only) ---------------------
+
+
+def test_target_stability_none_without_provider_or_method():
+    # No provider -> unavailable (offline table has no hull info).
+    assert target_stability("BaTiO3", provider=None) == (None, False)
+
+    class NoHull:
+        def formation_enthalpy(self, formula):
+            return -100.0
+
+    # A provider lacking energy_above_hull stays unavailable.
+    assert target_stability("BaTiO3", provider=NoHull()) == (None, False)
+
+
+def test_target_stability_reads_provider_hull():
+    class Provider:
+        def energy_above_hull(self, formula):
+            return 0.05 if formula == "BaTiO3" else None
+
+    value, available = target_stability("BaTiO3", provider=Provider())
+    assert available is True and value == 0.05
+    assert target_stability("XYZ", provider=Provider()) == (None, False)
+
+
+def test_stability_favorability_monotonic_and_neutral():
+    assert stability_favorability(None, available=False) == 0.5
+    on_hull = stability_favorability(0.0, True)
+    metastable = stability_favorability(0.1, True)
+    unstable = stability_favorability(0.5, True)
+    assert on_hull == 1.0
+    assert on_hull > metastable > unstable
+    assert 0.0 < unstable < metastable
