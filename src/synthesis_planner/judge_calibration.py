@@ -1,31 +1,63 @@
-"""Judge calibration and evaluation metrics."""
+"""Judge calibration and evaluation metrics.
+
+De-circularized per DESIGN_RETROSYNTH_ANALOG.md §3.5 / EVALUATION.md §6.4. The
+old routine correlated the judge score against ``hard_checks.valid`` on
+literature-only (near-all-valid) routes, which is circular (the deterministic
+judge derives from validity) and negatives-free. It is replaced by two fully
+offline, non-circular signals:
+
+1. **Corrupted-route negatives.** Each gold route is perturbed three ways -- swap
+   a precursor to a wrong (non-covering) element, swap the heating atmosphere,
+   and delete the heating step -- and we check that the ranker scores the gold
+   route above its corruptions. We report ranking accuracy, mean gold-minus-
+   corrupted separation, and the AUROC of the ranker as a gold/corrupted filter.
+2. **Held-out recovery correlation.** Over the pool of {gold + corrupted}
+   candidates we correlate the ranker score with precursor recovery (match to the
+   gold precursor set). A positive correlation means a higher score predicts
+   recovering the true precursors -- the property calibration should establish.
+
+The ranker is the deterministic judge + exact chemistry score
+(``evaluate_state(...).score.total``), so validity/redox/balance gates and the
+demoted retrieval term all feed the ranking. No LLM / API key required.
+"""
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from statistics import mean
-from typing import Callable
 
 from .core.constraints import evaluate_hard_constraints
 from .core.judge import build_judge
+from .core.scoring import evaluate_state
 from .data.retrieval import RetrievalIndex
-from .core.schema import PlanningProblem, PlanningState, RouteRecord
+from .core.schema import (
+    EvaluationConfig,
+    NumericRange,
+    OperationRecord,
+    PlanningProblem,
+    PlanningState,
+    PrecursorRecord,
+    RouteRecord,
+)
 
 
 @dataclass(frozen=True)
 class CalibrationResult:
-    """Results of judge calibration against ground-truth routes"""
+    """Results of de-circularized judge calibration."""
+
     judge_name: str
     n_samples: int
-    correlation_with_validity: float
-    correlation_with_precursor_match: float
-    correlation_with_element_coverage: float
-    mean_judge_score: float
-    std_judge_score: float
-    high_score_precision: float  # What % of high-scored (>0.7) routes are valid?
-    low_score_recall: float      # What % of invalid routes scored low (<0.3)?
+    n_negatives: int
+    corrupted_ranking_accuracy: float   # fraction of corruptions ranked below gold
+    ranker_auroc: float                 # AUROC separating gold (pos) from corrupted (neg)
+    gold_minus_corrupted: float         # mean(gold score) - mean(corrupted score)
+    recovery_correlation: float         # Spearman(score, precursor recovery) over the pool
+    mean_gold_score: float
+    mean_corrupted_score: float
+    mean_judge_score: float             # deterministic judge score on gold (0-1)
     score_distribution: dict[str, int] = field(default_factory=dict)
+    correlation_with_validity: float = 0.0  # deprecated; kept for back-compat
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -33,12 +65,98 @@ class CalibrationResult:
 
 @dataclass(frozen=True)
 class CalibrationSample:
-    """Single sample in calibration dataset"""
+    """Single (gold, corrupted-negatives) calibration record."""
+
     target_formula: str
-    judge_score: float
-    is_valid: bool
-    precursor_match: float
-    element_coverage: float
+    gold_score: float
+    corrupted_scores: tuple[float, ...]
+    gold_judge_score: float
+    gold_precursor_match: float
+
+
+def _score_route(state: PlanningState, analogs, judge_name: str, judge_config: dict | None) -> float:
+    """Ranker: deterministic judge + exact chemistry score for a candidate route."""
+    planned = evaluate_state(
+        state,
+        analogs,
+        EvaluationConfig(judge_name=judge_name, judge_config=judge_config or {}),
+    )
+    return planned.score.total
+
+
+def _corrupt_route(route: RouteRecord) -> list[tuple[str, PlanningState]]:
+    """Generate corrupted-negative planning states from a gold route.
+
+    Three perturbations mirroring the design: (1) swap a precursor to a wrong,
+    non-covering element; (2) swap the heating atmosphere; (3) delete the heating
+    step. Corruptions that cannot be formed (e.g. no heating step to delete) are
+    skipped.
+    """
+    negatives: list[tuple[str, PlanningState]] = []
+    base = _route_to_state(route)
+
+    # (1) swap a precursor for an unrelated, non-covering commodity.
+    if base.precursors:
+        wrong = PrecursorRecord(formula="NaCl", class_name="halide", elements=("Na", "Cl"))
+        swapped = (wrong,) + tuple(base.precursors[1:])
+        negatives.append(("swap_precursor", _with_fields(base, precursors=swapped)))
+
+    # (2) swap the heating atmosphere to an implausible one.
+    if any(op.verb == "heat" for op in base.operations):
+        new_ops = []
+        swapped_any = False
+        for op in base.operations:
+            if op.verb == "heat" and not swapped_any:
+                bad = "vacuum" if (op.atmosphere or "air") != "vacuum" else "H2"
+                new_ops.append(
+                    OperationRecord(
+                        verb=op.verb,
+                        temperature_c=op.temperature_c,
+                        time_h=op.time_h,
+                        atmosphere=bad,
+                        source_label=op.source_label,
+                    )
+                )
+                swapped_any = True
+            else:
+                new_ops.append(op)
+        negatives.append(("swap_atmosphere", _with_fields(base, operations=tuple(new_ops))))
+
+        # (3) delete the heating step(s) entirely.
+        no_heat = tuple(op for op in base.operations if op.verb != "heat")
+        negatives.append(("delete_heating", _with_fields(base, operations=no_heat)))
+
+    return negatives
+
+
+def _with_fields(state: PlanningState, **changes) -> PlanningState:
+    fields = dict(
+        problem=state.problem,
+        target_elements=state.target_elements,
+        target_class=state.target_class,
+        stage=state.stage,
+        precursors=state.precursors,
+        solvents=state.solvents,
+        operations=state.operations,
+        evidence_dois=state.evidence_dois,
+        analog_targets=state.analog_targets,
+    )
+    fields.update(changes)
+    return PlanningState(**fields)
+
+
+def _auroc(positives: list[float], negatives: list[float]) -> float:
+    """AUROC = P(random positive scored above random negative), ties count 0.5."""
+    if not positives or not negatives:
+        return 0.0
+    wins = 0.0
+    for p in positives:
+        for n in negatives:
+            if p > n:
+                wins += 1.0
+            elif p == n:
+                wins += 0.5
+    return wins / (len(positives) * len(negatives))
 
 
 def calibrate_judge(
@@ -48,122 +166,110 @@ def calibrate_judge(
     judge_config: dict | None = None,
     max_samples: int = 100,
 ) -> CalibrationResult:
-    """
-    Calibrate judge by evaluating held-out ground-truth routes.
+    """Calibrate the ranker against corrupted-route negatives + recovery.
 
     Args:
-        judge_name: Name of judge to calibrate
-        test_routes: Held-out test routes to evaluate
-        train_routes: Training routes for retrieval context
-        judge_config: Optional judge configuration
-        max_samples: Maximum number of test routes to evaluate
-
-    Returns:
-        CalibrationResult with correlation metrics
+        judge_name: judge to use inside the ranker.
+        test_routes: held-out gold routes (perturbed into negatives).
+        train_routes: training routes for the retrieval context (leakage-safe).
+        judge_config: optional judge configuration.
+        max_samples: maximum gold routes to evaluate.
     """
-    judge = build_judge(judge_name, judge_config or {})
     retrieval = RetrievalIndex(train_routes)
+    judge = build_judge(judge_name, judge_config or {})
 
-    samples = []
+    samples: list[CalibrationSample] = []
     for route in test_routes[:max_samples]:
-        # Convert RouteRecord to PlanningState
-        state = _route_to_state(route)
-
-        # Get retrieval context
+        gold_state = _route_to_state(route)
         analogs = retrieval.retrieve(route.target_formula, top_k=12)
 
-        # Evaluate with judge
-        hard_checks = evaluate_hard_constraints(state)
-        judge_result = judge.evaluate(state, analogs, hard_checks)
+        gold_score = _score_route(gold_state, analogs, judge_name, judge_config)
+        corrupted = _corrupt_route(route)
+        corrupted_scores = tuple(
+            _score_route(state, analogs, judge_name, judge_config) for _, state in corrupted
+        )
 
-        # Compute ground-truth metrics
-        is_valid = hard_checks.valid
-        precursor_match = _compute_precursor_match(state, route)
-        element_coverage = hard_checks.coverage_fraction
+        hard_checks = evaluate_hard_constraints(gold_state)
+        gold_judge_score = judge.evaluate(gold_state, analogs, hard_checks).score
 
-        samples.append(CalibrationSample(
-            target_formula=route.target_formula,
-            judge_score=judge_result.score,
-            is_valid=is_valid,
-            precursor_match=precursor_match,
-            element_coverage=element_coverage,
-        ))
+        samples.append(
+            CalibrationSample(
+                target_formula=route.target_formula,
+                gold_score=gold_score,
+                corrupted_scores=corrupted_scores,
+                gold_judge_score=gold_judge_score,
+                gold_precursor_match=1.0,  # gold recovers itself by definition
+            )
+        )
 
     if not samples:
         return CalibrationResult(
             judge_name=judge_name,
             n_samples=0,
-            correlation_with_validity=0.0,
-            correlation_with_precursor_match=0.0,
-            correlation_with_element_coverage=0.0,
+            n_negatives=0,
+            corrupted_ranking_accuracy=0.0,
+            ranker_auroc=0.0,
+            gold_minus_corrupted=0.0,
+            recovery_correlation=0.0,
+            mean_gold_score=0.0,
+            mean_corrupted_score=0.0,
             mean_judge_score=0.0,
-            std_judge_score=0.0,
-            high_score_precision=0.0,
-            low_score_recall=0.0,
             score_distribution={},
+            correlation_with_validity=0.0,
         )
 
-    # Compute correlations
-    validity_corr = _spearman_correlation(
-        [s.judge_score for s in samples],
-        [1.0 if s.is_valid else 0.0 for s in samples]
-    )
+    gold_scores = [s.gold_score for s in samples]
+    all_corrupted = [c for s in samples for c in s.corrupted_scores]
 
-    precursor_corr = _spearman_correlation(
-        [s.judge_score for s in samples],
-        [s.precursor_match for s in samples]
-    )
+    # Ranking accuracy: fraction of (gold, corrupted) pairs where gold > corrupted.
+    comparisons = 0
+    gold_wins = 0
+    for s in samples:
+        for c in s.corrupted_scores:
+            comparisons += 1
+            if s.gold_score > c:
+                gold_wins += 1
+    ranking_accuracy = gold_wins / comparisons if comparisons else 0.0
 
-    coverage_corr = _spearman_correlation(
-        [s.judge_score for s in samples],
-        [s.element_coverage for s in samples]
-    )
+    # Recovery correlation over the {gold + corrupted} pool: score vs precursor
+    # recovery (gold=1.0; corrupted precursor swaps=lower, others keep precursors).
+    pool_scores: list[float] = []
+    pool_recovery: list[float] = []
+    for route, s in zip(test_routes[:max_samples], samples):
+        pool_scores.append(s.gold_score)
+        pool_recovery.append(1.0)
+        for (label, state), score in zip(_corrupt_route(route), s.corrupted_scores):
+            pool_scores.append(score)
+            pool_recovery.append(_compute_precursor_match(state, route))
+    recovery_corr = _spearman_correlation(pool_scores, pool_recovery)
 
-    # Compute precision and recall
-    high_score_samples = [s for s in samples if s.judge_score > 0.7]
-    high_score_precision = (
-        sum(1 for s in high_score_samples if s.is_valid) / len(high_score_samples)
-        if high_score_samples else 0.0
-    )
-
-    invalid_samples = [s for s in samples if not s.is_valid]
-    low_score_recall = (
-        sum(1 for s in invalid_samples if s.judge_score < 0.3) / len(invalid_samples)
-        if invalid_samples else 0.0
-    )
-
-    # Score distribution
-    score_bins = ["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"]
     distribution = Counter()
-    for sample in samples:
-        if sample.judge_score < 0.2:
-            distribution["0.0-0.2"] += 1
-        elif sample.judge_score < 0.4:
-            distribution["0.2-0.4"] += 1
-        elif sample.judge_score < 0.6:
-            distribution["0.4-0.6"] += 1
-        elif sample.judge_score < 0.8:
-            distribution["0.6-0.8"] += 1
-        else:
-            distribution["0.8-1.0"] += 1
-
-    # Compute mean and std
-    scores = [s.judge_score for s in samples]
-    mean_score = mean(scores)
-    std_score = (sum((s - mean_score) ** 2 for s in scores) / len(scores)) ** 0.5
+    for score in gold_scores:
+        distribution[_score_bin(score)] += 1
 
     return CalibrationResult(
         judge_name=judge_name,
         n_samples=len(samples),
-        correlation_with_validity=validity_corr,
-        correlation_with_precursor_match=precursor_corr,
-        correlation_with_element_coverage=coverage_corr,
-        mean_judge_score=mean_score,
-        std_judge_score=std_score,
-        high_score_precision=high_score_precision,
-        low_score_recall=low_score_recall,
+        n_negatives=len(all_corrupted),
+        corrupted_ranking_accuracy=ranking_accuracy,
+        ranker_auroc=_auroc(gold_scores, all_corrupted),
+        gold_minus_corrupted=(mean(gold_scores) - mean(all_corrupted)) if all_corrupted else 0.0,
+        recovery_correlation=recovery_corr,
+        mean_gold_score=mean(gold_scores),
+        mean_corrupted_score=mean(all_corrupted) if all_corrupted else 0.0,
+        mean_judge_score=mean(s.gold_judge_score for s in samples),
         score_distribution=dict(distribution),
+        correlation_with_validity=0.0,
     )
+
+
+def _score_bin(score: float) -> str:
+    edges = [(-2.0, "<0"), (0.0, "0-1"), (1.0, "1-2"), (2.0, "2-3"), (3.0, "3-4")]
+    label = ">=4"
+    for threshold, name in edges:
+        if score < threshold:
+            return name
+    return label
 
 
 def _route_to_state(route: RouteRecord) -> PlanningState:
@@ -239,27 +345,30 @@ def _rank_data(data: list[float]) -> list[float]:
 
 
 def print_calibration_report(result: CalibrationResult) -> None:
-    """Print human-readable calibration report"""
+    """Print human-readable calibration report (corrupted-negative based)."""
     print(f"\n{'='*60}")
-    print(f"Judge Calibration Report: {result.judge_name}")
+    print(f"Judge Calibration Report (de-circularized): {result.judge_name}")
     print(f"{'='*60}\n")
 
-    print(f"Samples evaluated: {result.n_samples}")
-    print(f"Mean judge score: {result.mean_judge_score:.3f} ± {result.std_judge_score:.3f}\n")
+    print(f"Gold routes evaluated:   {result.n_samples}")
+    print(f"Corrupted negatives:     {result.n_negatives}\n")
 
-    print("Correlations with ground truth:")
-    print(f"  - Validity:          {result.correlation_with_validity:+.3f}")
-    print(f"  - Precursor match:   {result.correlation_with_precursor_match:+.3f}")
-    print(f"  - Element coverage:  {result.correlation_with_element_coverage:+.3f}\n")
+    print("Gold vs corrupted-route negatives:")
+    print(f"  - Ranking accuracy (gold > corrupted): {result.corrupted_ranking_accuracy:.1%}")
+    print(f"  - Ranker AUROC (gold vs corrupted):    {result.ranker_auroc:.3f}")
+    print(f"  - Mean gold score:                     {result.mean_gold_score:+.3f}")
+    print(f"  - Mean corrupted score:                {result.mean_corrupted_score:+.3f}")
+    print(f"  - Separation (gold - corrupted):       {result.gold_minus_corrupted:+.3f}\n")
 
-    print("Precision and Recall:")
-    print(f"  - High-score precision (>0.7 → valid): {result.high_score_precision:.1%}")
-    print(f"  - Low-score recall (invalid → <0.3):   {result.low_score_recall:.1%}\n")
+    print("Held-out recovery:")
+    print(f"  - Spearman(score, precursor recovery): {result.recovery_correlation:+.3f}")
+    print(f"  - Mean deterministic judge score:      {result.mean_judge_score:.3f}\n")
 
-    print("Score distribution:")
-    for bin_range, count in sorted(result.score_distribution.items()):
-        bar = '█' * int(count / result.n_samples * 40)
-        pct = count / result.n_samples * 100
-        print(f"  {bin_range}: {bar} {count:3d} ({pct:4.1f}%)")
+    if result.n_samples:
+        print("Gold score distribution:")
+        for bin_range, count in sorted(result.score_distribution.items()):
+            bar = '█' * int(count / result.n_samples * 40)
+            pct = count / result.n_samples * 100
+            print(f"  {bin_range}: {bar} {count:3d} ({pct:4.1f}%)")
 
     print(f"\n{'='*60}\n")

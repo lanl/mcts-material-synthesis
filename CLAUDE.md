@@ -221,9 +221,32 @@ class CustomJudge(BaseJudge):
 
 Register in `core/judge.py` `_get_judge()` factory.
 
+## Real-energy thermodynamics (physics provider seam)
+
+`core/physics.py` computes a non-analog reaction-driving-force reward. By default
+it uses an offline formation-enthalpy table + oxide-sum estimator. For **real**
+MP/DFT energies, pass a provider via `EvaluationConfig.physics_provider` (duck-typed:
+`formation_enthalpy(formula) -> kJ/mol per formula unit`, optional
+`energy_above_hull(formula) -> eV/atom`). Two are supplied in
+`data/materials_project.py`:
+
+- `MPThermoProvider(MaterialsProjectClient(key))` - live, converts MP's eV/atom to
+  kJ/mol/f.u. (`E_f * n_atoms * 96.485`).
+- `CachedThermoProvider.from_json(path)` - fully offline, reads a JSON energy dump
+  (`{formula: {formation_energy_ev_per_atom, energy_above_hull, is_stable}}`).
+
+**Air-gapped workflow:** on a networked box run
+`build_thermo_cache(client, formulas, "thermo.json")` once, copy the JSON here,
+then `CachedThermoProvider.from_json("thermo.json")`. NB: `energy_above_hull` is a
+*target-level* makeability screen (`target_stability`/`stability_favorability`) -
+constant across routes to a fixed target, so it screens targets (prospective), not
+routes within one target.
+
 ## Current Limitations
 
-- Thermodynamic scoring uses offline chemistry proxies (balanced reactions, redox checks) but does not query formation energies or phase diagrams
+- Thermodynamic scoring uses offline chemistry proxies by default; real formation
+  energies / e-above-hull flow in only when a physics provider is supplied (above),
+  which needs an MP key or a prebuilt cache
 - Default judge is deterministic; model-backed judge requires API key and compatible endpoint
 - Route scoring is baseline heuristics, not a calibrated literature-plus-physics model
 - Benchmark harness provides retrospective splits and ablations but not full prospective expert evaluation

@@ -159,6 +159,12 @@ class ScoreBreakdown:
     hazard: float
     complexity: float
     total: float
+    # Solved-to-stock term: fraction of leaf precursors in stock (retrosynthesis
+    # redesign). Dominant terminal reward; 0.0 when no stock context is supplied.
+    stock: float = 0.0
+    # Thermodynamic favorability of the balanced reaction in [0,1] (physics
+    # signal); 0.5 = neutral / not computable. See core/physics.py.
+    physics: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -168,6 +174,28 @@ class EvaluationConfig:
     use_hard_checks: bool = True
     use_partial_judge: bool = False
     judge_config: dict[str, Any] = field(default_factory=dict)
+    # Solved-to-stock context and reward weights (retrosynthesis redesign).
+    # ``stock`` is duck-typed (a data.stock.Stock) to avoid a core->data import
+    # cycle; it must expose ``.contains(precursor)``. When present, the scorer
+    # rewards routes whose precursors bottom out in stock and demotes the
+    # self-similarity ``retrieval`` term so it guides expansion, not the leaf.
+    stock: Any = None
+    stock_weight: float = 2.5
+    retrieval_weight: float = 0.2
+    # Precursor-frequency prior (reframing): a duck-typed mapping
+    # {formula -> normalized frequency in [0,1]} mined from the (train) corpus.
+    # Folded into the precursor reward so MCTS is pulled toward the SAME common
+    # precursors a frequency-prior baseline would pick - search then differs on
+    # conditions/stages, so it can match-or-beat that baseline rather than trail
+    # it on precursor selection.
+    precursor_frequency: Any = None
+    # Physics signal (offline thermodynamics by default). ``physics_provider`` is
+    # a duck-typed seam exposing ``formation_enthalpy(formula) -> float | None``
+    # for real MP/DFT/ML energies when available; None uses the offline table +
+    # oxide-sum estimator in core/physics.py. Weighted, mean-centered in the
+    # reward so a neutral (0.5) favorability contributes nothing.
+    physics_provider: Any = None
+    physics_weight: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -212,3 +240,128 @@ class PlanningState:
     @property
     def is_terminal(self) -> bool:
         return self.stage == "terminal"
+
+
+@dataclass
+class DAGNode:
+    """A node in a synthesis DAG: a material that must be made.
+
+    Mutable (unlike the frozen planning dataclasses) because the DAG is assembled
+    incrementally by the recursion driver. ``recipe`` is the chosen single-step
+    route for this material; ``children`` are the sub-targets (non-stock
+    precursors) expanded further. A node is a solved leaf when ``in_stock`` is
+    True; ``dangling`` marks a non-stock precursor that could not be expanded
+    (depth cap hit or no plausible sub-route).
+    """
+
+    target_formula: str
+    modality: str
+    depth: int
+    in_stock: bool = False
+    dangling: bool = False
+    recipe: "PlannedRoute | None" = None
+    children: list["DAGNode"] = field(default_factory=list)
+    # An intermediate node (e.g. the as-precipitated gel / dried precursor powder
+    # in a sol-gel or co-precipitation route) is a real multi-step stage that has
+    # no balanceable crystalline formula of its own. It carries its formation
+    # operations directly and is considered valid when its inputs bottom out in
+    # stock (its correctness is enforced by the parent route's hard checks).
+    is_intermediate: bool = False
+    operations: tuple = ()
+
+    @property
+    def is_leaf(self) -> bool:
+        return not self.children
+
+    def leaves(self) -> list["DAGNode"]:
+        """All leaf nodes reachable from this node (self if it is a leaf)."""
+        if self.is_leaf:
+            return [self]
+        collected: list[DAGNode] = []
+        for child in self.children:
+            collected.extend(child.leaves())
+        return collected
+
+    def node_count(self) -> int:
+        return 1 + sum(child.node_count() for child in self.children)
+
+    def max_depth(self) -> int:
+        if not self.children:
+            return self.depth
+        return max(child.max_depth() for child in self.children)
+
+
+@dataclass
+class SynthesisDAG:
+    """A full synthesis plan for a root target, as a recursive DAG of DAGNodes."""
+
+    target_formula: str
+    modality: str
+    root: DAGNode
+    max_depth_cap: int = 2
+
+    @property
+    def is_solved(self) -> bool:
+        """Solved iff every leaf is in stock and every internal node has a recipe."""
+        leaves = self.root.leaves()
+        if not leaves:
+            return False
+        if not all(leaf.in_stock and not leaf.dangling for leaf in leaves):
+            return False
+        return all(self._node_valid(node) for node in self._internal_nodes())
+
+    def _node_valid(self, node: DAGNode) -> bool:
+        # Intermediate stages (amorphous gel/precursor powder) have no crystalline
+        # formula to balance; their validity is carried by the parent route.
+        if node.is_intermediate:
+            return True
+        if node.recipe is None:
+            return False
+        return node.recipe.hard_checks.valid
+
+    def _internal_nodes(self) -> list[DAGNode]:
+        return [node for node in self._all_nodes() if node.children]
+
+    def _all_nodes(self) -> list[DAGNode]:
+        stack = [self.root]
+        collected: list[DAGNode] = []
+        while stack:
+            node = stack.pop()
+            collected.append(node)
+            stack.extend(node.children)
+        return collected
+
+    @property
+    def depth(self) -> int:
+        return self.root.max_depth()
+
+    @property
+    def node_count(self) -> int:
+        return self.root.node_count()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_formula": self.target_formula,
+            "modality": self.modality,
+            "is_solved": self.is_solved,
+            "depth": self.depth,
+            "node_count": self.node_count,
+            "root": _dag_node_to_dict(self.root),
+        }
+
+
+def _dag_node_to_dict(node: DAGNode) -> dict[str, Any]:
+    return {
+        "target_formula": node.target_formula,
+        "modality": node.modality,
+        "depth": node.depth,
+        "in_stock": node.in_stock,
+        "dangling": node.dangling,
+        "is_intermediate": node.is_intermediate,
+        "precursors": [p.formula for p in node.recipe.precursors] if node.recipe else [],
+        "operations": [op.verb for op in node.operations] if node.is_intermediate else (
+            [op.verb for op in node.recipe.operations] if node.recipe else []
+        ),
+        "valid": node.recipe.hard_checks.valid if node.recipe else None,
+        "children": [_dag_node_to_dict(child) for child in node.children],
+    }

@@ -16,8 +16,7 @@ __pycache__/
 .DS_Store
 
 # Downloaded or generated planner artifacts
-data/raw/*.xz
-data/raw/*.zip
+data/raw/
 data/processed/
 planning_results/
 benchmark_results/

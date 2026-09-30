@@ -24,6 +24,13 @@ SOLUTION_URL = (
 )
 
 
+# Filename globs used to locate an already-present raw corpus in ``data_dir``.
+# We accept whatever version the user has downloaded/uploaded (raw ``.json``,
+# lzma ``.json.xz`` or a ``.json.zip`` archive) rather than a single pinned name.
+SOLID_STATE_GLOBS = ("solid-state_dataset*.json", "solid-state_dataset*.json.xz", "solid-state_dataset*.json.zip")
+SOLUTION_GLOBS = ("solution-synthesis_dataset*.json", "solution-synthesis_dataset*.json.xz", "solution-synthesis_dataset*.json.zip")
+
+
 def download_public_datasets(data_dir: str | Path) -> dict[str, Path]:
     path = Path(data_dir)
     path.mkdir(parents=True, exist_ok=True)
@@ -32,26 +39,69 @@ def download_public_datasets(data_dir: str | Path) -> dict[str, Path]:
         "solid_state": path / "solid-state_dataset_20200713.json.xz",
         "solution": path / "solution-synthesis_dataset_2021-8-5.json.zip",
     }
-    if not destinations["solid_state"].exists():
+    # Skip the download entirely if a compatible corpus is already present
+    # (e.g. a manually placed raw ``.json``); otherwise fetch the pinned URLs.
+    if _find_dataset_file(path, SOLID_STATE_GLOBS) is None:
         urlretrieve(SOLID_STATE_URL, destinations["solid_state"])
-    if not destinations["solution"].exists():
+    if _find_dataset_file(path, SOLUTION_GLOBS) is None:
         urlretrieve(SOLUTION_URL, destinations["solution"])
     return destinations
 
 
+def _find_dataset_file(data_dir: Path, globs: Iterable[str]) -> Path | None:
+    """Return the first raw corpus matching any glob, preferring raw ``.json``.
+
+    Raw JSON is preferred because it loads fastest and needs no decompression.
+    """
+    for pattern in globs:
+        matches = sorted(data_dir.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _load_json_any(path: Path):
+    """Load a JSON payload from a raw ``.json``, ``.json.xz`` or ``.json.zip`` file."""
+    suffixes = path.suffixes
+    if path.suffix == ".xz" or ".xz" in suffixes:
+        with lzma.open(path, "rt", encoding="utf-8") as handle:
+            return json.load(handle)
+    if path.suffix == ".zip" or ".zip" in suffixes:
+        with zipfile.ZipFile(path) as archive:
+            member = archive.namelist()[0]
+            with archive.open(member) as handle:
+                return json.load(handle)
+    with path.open("rt", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _as_reaction_list(payload) -> list[dict]:
+    """Normalize the container: some releases wrap records under ``reactions``."""
+    if isinstance(payload, dict):
+        return payload.get("reactions") or payload.get("data") or []
+    return payload
+
+
 def load_raw_solid_state(data_dir: str | Path) -> list[dict]:
-    data_path = Path(data_dir) / "solid-state_dataset_20200713.json.xz"
-    with lzma.open(data_path, "rt", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    return payload["reactions"]
+    data_dir = Path(data_dir)
+    data_path = _find_dataset_file(data_dir, SOLID_STATE_GLOBS)
+    if data_path is None:
+        raise FileNotFoundError(
+            f"No solid-state corpus found in {data_dir} (looked for {SOLID_STATE_GLOBS}). "
+            "Run 'download-data' or place the raw JSON there."
+        )
+    return _as_reaction_list(_load_json_any(data_path))
 
 
 def load_raw_solution(data_dir: str | Path) -> list[dict]:
-    data_path = Path(data_dir) / "solution-synthesis_dataset_2021-8-5.json.zip"
-    with zipfile.ZipFile(data_path) as archive:
-        member = archive.namelist()[0]
-        with archive.open(member) as handle:
-            return json.load(handle)
+    data_dir = Path(data_dir)
+    data_path = _find_dataset_file(data_dir, SOLUTION_GLOBS)
+    if data_path is None:
+        raise FileNotFoundError(
+            f"No solution-synthesis corpus found in {data_dir} (looked for {SOLUTION_GLOBS}). "
+            "Run 'download-data' or place the raw JSON there."
+        )
+    return _as_reaction_list(_load_json_any(data_path))
 
 
 def prepare_processed_data(data_dir: str | Path, processed_dir: str | Path) -> dict[str, Path]:
@@ -141,27 +191,34 @@ def classify_precursor(formula: str) -> str:
         return "elemental_or_other"
     lowered = formula.lower()
     parsed = _safe_parse_formula(formula)
+    elements = set(parsed.keys())
+
+    # Polyatomic-anion groups first (substring on the lowercased formula, but
+    # using tokens specific enough to avoid element false-positives such as
+    # "CoO" -> acetate or "NiO" -> nitrate).
     if "co3" in lowered:
         return "carbonate"
     if "no3" in lowered:
         return "nitrate"
-    if "coo" in lowered or "ch3coo" in lowered or "c2h3o2" in lowered:
+    if "ch3coo" in lowered or "c2h3o2" in lowered or "ch3co2" in lowered or "(cho)" in lowered:
         return "acetate"
-    if "oh" in lowered:
-        return "hydroxide"
-    if any(token in formula for token in ("Cl", "Br", "I", "F")):
-        return "halide"
     if "so4" in lowered:
         return "sulfate"
-    if "S" in parsed and "O" not in parsed:
+    if "oh" in lowered and "O" in elements and "H" in elements:
+        return "hydroxide"
+    # Element-membership checks (not substring) so "Fe"/"In"/"Ni" don't get
+    # mis-read as halide/other by matching the letters F/I inside a symbol.
+    if elements & {"F", "Cl", "Br", "I"}:
+        return "halide"
+    if "S" in elements and "O" not in elements:
         return "sulfide"
-    if "O" in parsed:
+    if "O" in elements:
         return "oxide"
     return "elemental_or_other"
 
 
 def _normalize_operation(operation: dict) -> OperationRecord:
-    conditions = operation.get("conditions", {})
+    conditions = operation.get("conditions") or {}
     return OperationRecord(
         verb=_normalize_operation_type(operation.get("type", ""), operation.get("string") or operation.get("token")),
         temperature_c=_extract_range(conditions.get("temperature") or conditions.get("heating_temperature")),
@@ -175,12 +232,22 @@ def _normalize_operation_type(raw_type: str, raw_label: str | None) -> str:
     mapping = {
         "StartingSynthesis": "start",
         "MixingOperation": "mix",
+        "Mixing": "mix",
+        "SolutionMixing": "mix",
         "HeatingOperation": "heat",
+        "Heating": "heat",
         "ShapingOperation": "shape",
+        "Shaping": "shape",
         "DryingOperation": "dry",
+        "Drying": "dry",
         "QuenchingOperation": "quench",
+        "Quenching": "quench",
         "PurificationOperation": "wash",
+        "Purification": "wash",
         "CoolingOperation": "cool",
+        "Cooling": "cool",
+        "LiquidGrinding": "grind",
+        "Grinding": "grind",
     }
     if raw_type in mapping:
         return mapping[raw_type]

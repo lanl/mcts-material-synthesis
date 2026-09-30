@@ -3,6 +3,7 @@
 from synthesis_planner.judge_calibration import (
     CalibrationSample,
     _compute_precursor_match,
+    _corrupt_route,
     _rank_data,
     _route_to_state,
     _spearman_correlation,
@@ -101,14 +102,30 @@ def test_compute_precursor_match_partial():
     assert match == 0.5
 
 
-def test_calibrate_judge_basic():
-    """Test basic calibration functionality"""
-    # Create test routes
+def test_corrupt_route_generates_negatives():
+    """Corruption produces swap-precursor / swap-atmosphere / delete-heating negatives."""
+    from synthesis_planner.core.schema import NumericRange, OperationRecord
+
+    route = _make_route("BaTiO3", ["BaCO3", "TiO2"], [])
+    # Give it an explicit heating operation so all three corruptions fire.
+    route = _replace_operations(route, (
+        OperationRecord("mix"),
+        OperationRecord("heat", temperature_c=NumericRange(1100.0, 1100.0, "C"), atmosphere="air"),
+    ))
+    negatives = _corrupt_route(route)
+    labels = {label for label, _ in negatives}
+    assert labels == {"swap_precursor", "swap_atmosphere", "delete_heating"}
+    # delete_heating removes the heat op.
+    deleted = dict(negatives)["delete_heating"]
+    assert all(op.verb != "heat" for op in deleted.operations)
+
+
+def test_calibrate_judge_ranks_gold_above_corrupted():
+    """De-circularized calibration: gold routes should rank above their corruptions."""
     train_routes = [
         _make_route("LiCoO2", ["Li2CO3", "Co3O4"], ["mix", "heat"]),
         _make_route("NiO", ["Ni(NO3)2"], ["heat", "cool"]),
     ]
-
     test_routes = [
         _make_route("BaTiO3", ["BaCO3", "TiO2"], ["mix", "heat"]),
     ]
@@ -122,6 +139,11 @@ def test_calibrate_judge_basic():
 
     assert result.judge_name == "deterministic"
     assert result.n_samples == 1
+    assert result.n_negatives >= 1
+    # Gold outranks its corrupted negatives on average and via AUROC.
+    assert result.gold_minus_corrupted > 0.0
+    assert result.ranker_auroc >= 0.5
+    assert 0.0 <= result.corrupted_ranking_accuracy <= 1.0
     assert 0.0 <= result.mean_judge_score <= 1.0
     assert isinstance(result.score_distribution, dict)
 
@@ -136,7 +158,15 @@ def test_calibrate_judge_empty():
     )
 
     assert result.n_samples == 0
+    assert result.n_negatives == 0
+    assert result.ranker_auroc == 0.0
     assert result.correlation_with_validity == 0.0
+
+
+def _replace_operations(route, operations):
+    from dataclasses import replace
+
+    return replace(route, operations=operations)
 
 
 # Helper functions

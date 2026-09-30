@@ -40,6 +40,9 @@ class SynthesisPlanner:
         use_judge: bool = True,
         use_hard_checks: bool = True,
         use_retrieval: bool = True,
+        value_aggregation: str = "mean",
+        stock=None,
+        templates=None,
     ) -> list[PlannedRoute]:
         self.ensure_processed_data()
         routes = load_processed_routes(self.processed_dir, problem.modality)
@@ -56,6 +59,9 @@ class SynthesisPlanner:
             use_judge=use_judge,
             use_hard_checks=use_hard_checks,
             use_retrieval=use_retrieval,
+            value_aggregation=value_aggregation,
+            stock=stock,
+            templates=templates,
         )
 
     def plan_with_routes(
@@ -72,8 +78,20 @@ class SynthesisPlanner:
         use_judge: bool = True,
         use_hard_checks: bool = True,
         use_retrieval: bool = True,
+        value_aggregation: str = "mean",
+        stock=None,
+        templates=None,
+        retrieval: RetrievalIndex | None = None,
+        precursor_frequency=None,
     ) -> list[PlannedRoute]:
-        retrieval = RetrievalIndex(routes)
+        # A prebuilt retrieval index can be injected to avoid rebuilding it per
+        # node during DAG recursion (seam for Phase 3 / retro planning).
+        retrieval = retrieval or RetrievalIndex(routes)
+        # Frequency prior over precursor formulas, mined from the (train) routes
+        # and folded into the reward so MCTS favors the same common precursors a
+        # frequency-prior baseline would; computed once unless injected.
+        if precursor_frequency is None:
+            precursor_frequency = _build_precursor_frequency(routes)
         analogs = retrieval.retrieve(problem.target_formula, top_k=12) if use_retrieval else []
         candidate_precursor_sets = retrieval.candidate_precursor_sets(problem.target_formula, analogs, max_sets=12)
 
@@ -91,11 +109,89 @@ class SynthesisPlanner:
                 use_judge=use_judge,
                 use_hard_checks=use_hard_checks,
                 judge_config=judge_config or {},
+                stock=stock,
+                precursor_frequency=precursor_frequency,
             ),
             mp_client=self.mp_client,
+            value_aggregation=value_aggregation,
+            templates=templates,
         )
         root = mcts.run(root_state, analogs, candidate_precursor_sets, iterations=iterations)
         return _select_portfolio(root.terminal_routes, top_k)
+
+    def plan_dag(
+        self,
+        problem: PlanningProblem,
+        iterations: int = 250,
+        rollout_count: int = 8,
+        seed: int | None = None,
+        judge_name: str = "deterministic",
+        judge_config: dict | None = None,
+        max_depth: int = 2,
+        stock_min_frequency: int = 20,
+        stock=None,
+        templates=None,
+        routes: list[RouteRecord] | None = None,
+    ):
+        """Plan a recursive synthesis DAG (retrosynthesis-style, depth-capped).
+
+        Wraps the single-target MCTS with the DAG recursion driver: the root is
+        planned single-step, then every non-stock, plausible-sub-target precursor
+        is recursed on up to ``max_depth`` (default 2). Returns a SynthesisDAG.
+
+        The stock (solved criterion) and templates (widened action space) are
+        loaded/mined once and threaded into the inner scorer/grammar so every
+        node's recipe is rewarded for bottoming out in stock.
+        """
+        from .core.retro_planner import insert_solution_intermediates, plan_retro
+        from .data.stock import load_or_build_stock
+
+        self.ensure_processed_data()
+        if routes is None:
+            routes = load_processed_routes(self.processed_dir, problem.modality)
+        if stock is None:
+            stock = load_or_build_stock(self.processed_dir, min_frequency=stock_min_frequency)
+        if templates is None:
+            from .data.templates import load_or_build_templates
+
+            templates = load_or_build_templates(self.processed_dir, problem.modality, routes=routes)
+
+        retrieval = RetrievalIndex(routes)
+        known_targets = {route.target_formula for route in routes}
+
+        def plan_single(formula: str, modality: str):
+            sub_problem = PlanningProblem(target_formula=formula, modality=modality)
+            recipes = self.plan_with_routes(
+                sub_problem,
+                routes,
+                iterations=iterations,
+                top_k=1,
+                rollout_count=rollout_count,
+                seed=seed,
+                judge_name=judge_name,
+                judge_config=judge_config,
+                stock=stock,
+                templates=templates,
+                retrieval=retrieval,
+            )
+            return recipes[0] if recipes else None
+
+        def is_recursion_candidate(formula: str) -> bool:
+            # A plausible sub-target: appears as a target in the corpus and is not
+            # itself a buildable stock commodity.
+            return formula in known_targets and not stock.contains(formula)
+
+        dag = plan_retro(
+            problem.target_formula,
+            problem.modality,
+            plan_single=plan_single,
+            is_in_stock=stock.contains,
+            is_recursion_candidate=is_recursion_candidate,
+            max_depth=max_depth,
+        )
+        # #2: for solution modalities, expose the native precipitate/gel ->
+        # calcine multi-step structure as explicit intermediate DAG nodes.
+        return insert_solution_intermediates(dag, stock.contains)
 
     def score_route_record(
         self,
@@ -210,6 +306,24 @@ class SynthesisPlanner:
         with path.open("w") as handle:
             json.dump([route.to_dict() for route in routes], handle, indent=2)
         return path
+
+
+def _build_precursor_frequency(routes) -> dict[str, float]:
+    """Map precursor formula -> normalized corpus frequency in [0,1].
+
+    Built from the supplied (train) routes only, so it stays leakage-safe when a
+    train-only route list is passed during benchmarking.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for route in routes:
+        for precursor in route.precursors:
+            counts[precursor.formula] += 1
+    if not counts:
+        return {}
+    max_count = max(counts.values())
+    return {formula: count / max_count for formula, count in counts.items()}
 
 
 def _select_portfolio(routes: list[PlannedRoute], top_k: int, diversity_threshold: float = 0.7) -> list[PlannedRoute]:

@@ -42,6 +42,20 @@ mp = [
     "mp-api>=0.39",
 ]
 
+# Generative zeolite discovery via the frozen, pretrained DiffSyn diffusion model
+# (Strategy B; see DISCOVERY_DIFFSYN_INTEGRATION.md). These are the pip-installable
+# deps for running DiffSyn inference on CPU; torch is imported lazily inside
+# discovery/condition_generator.py so the core planner and the discovery search
+# (against stubs) never require it. NB: the DiffSyn code + weights + data live in
+# the `eltonpan/zeosyn_gen` GitHub repo, which must be cloned separately and passed
+# as `repo_root` (it is not a PyPI package). Install torch's CPU wheel via:
+#   pip install '.[diffsyn]' --extra-index-url https://download.pytorch.org/whl/cpu
+diffsyn = [
+    "torch>=1.12",
+    "einops>=0.6",
+    "scikit-learn>=1.0",
+]
+
 # Development and testing. Pulls in the judge extra so `.[dev]` remains
 # sufficient to run the full test suite (the structured-judge tests import the
 # openai code path, even though they monkeypatch the client).
@@ -68,6 +82,7 @@ packages = [
     "synthesis_planner.core",
     "synthesis_planner.data",
     "synthesis_planner.cli",
+    "synthesis_planner.discovery",
 ]
 # core/ imports only itself; data/ and cli/ import lazily where the dependency is
 # heavy (openai, mp_api), so importing the package stays lightweight.
