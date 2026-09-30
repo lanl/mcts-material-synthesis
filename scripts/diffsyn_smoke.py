@@ -40,8 +40,10 @@ def main() -> None:
         "--osda", default="C1COCCN2CCOCCOCCN(CCO1)CCOCCOCC2", help="OSDA SMILES (must be in the CSV)"
     )
     ap.add_argument("--n", type=int, default=16)
-    ap.add_argument("--sampling-timesteps", type=int, default=50,
-                    help="DDIM few-step sampling; full 1000-step DDPM is ~unusable on CPU")
+    ap.add_argument("--sampling-timesteps", type=int, default=250,
+                    help="DDIM steps. CPU-tolerable; NOTE <~100 gives degenerate samples "
+                         "(Si/Al,OH/T,sda1/T collapse) on this DDPM-tuned model. Use ~1000 "
+                         "(DDPM) or a GPU for faithful values.")
     ap.add_argument("--threads", type=int, default=4, help="cap torch intra-op threads")
     args = ap.parse_args()
 

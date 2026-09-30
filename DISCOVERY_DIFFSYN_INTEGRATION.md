@@ -243,17 +243,23 @@ implement `DiffSynConditionGenerator` against the real API.
         for the built-in reward; backward compatible).
   - [x] `tests/test_discovery_reward.py` (10) — full suite **164 passed / 1 skip**.
   - [x] Adapter CPU knobs: `sampling_timesteps` (DDIM) + `num_threads`.
-  - **Real-weight smoke reality:** the model DID load and reach sampling in an
-    earlier run, but full 1000-step DDPM sampling on this **GPU-less** node ran
-    >1h (thread-thrashing) and was killed. DDIM + thread-cap added; a 500s CPU run
-    still didn't print — the cost is dominated by **loading** (heavy import chain
-    `models.diffusion`->torchvision/pyrolite + `data.utils`->rdkit/torch_geometric,
-    then the 426MB `torch.load`). An instrumented timing run is pending. The
-    adapter is CORRECT; this is purely a CPU-throughput issue.
-    **Recommendation:** validate real inference on a **GPU box** (the paper does
-    1000 samples in ~2 min on GPU) — or accept a slow one-time CPU load, keep the
-    generator instance alive, and use small DDIM sampling. Nothing in the reward /
-    search code is blocked by this; it runs fully on the stub today.
+  - **Real-weight smoke — VALIDATED end-to-end (with a quality caveat).**
+    Instrumented CPU timing (`scratchpad/diffsyn_timed.py`, 8 threads):
+    `torch import 98s | model load ~437s (imports+426MB torch.load off lustre+dataset
+    pkl) | DDIM-20 sampling n=2 ~28s`. So the adapter is CORRECT and runs: it loaded
+    the real checkpoint+scalers+quantile transformers and emitted the exact 12
+    physical variables. **Bottleneck = cold LOADING (~9 min), not sampling** (DDIM
+    fixed sampling). The earlier >1h hang was full 1000-step DDPM sampling +
+    thread-thrash.
+    **QUALITY CAVEAT:** the DDIM-20 sample is *partially degenerate* — fields that
+    should be 0 for an OH-route aluminosilicate (Al/P, Si/Ge, Si/B, F/T, K/T)
+    correctly are, but `Si/Al`, `OH/T`, `sda1/T` also collapsed to 0 (wrong: implies
+    no Si / no OSDA). This is a **few-step-DDIM artifact** on a model tuned for
+    1000-step DDPM. Faithful values need more steps (DDPM ~1000 = ~20 min/batch on
+    CPU) or a **GPU** (paper: 1000 samples in ~2 min). For CPU dev use a moderate
+    DDIM (e.g. 100-250 steps) and treat values as approximate.
+    **None of the reward/search code is blocked** — it runs on the stub today, and
+    the real generator is a validated drop-in once faithful sampling (GPU) is used.
 
 - **2026-09-14 — Phase 1 COMPLETE (stub-validated), Phase 2 groundwork done.**
   - [x] `discovery/zeolite_schema.py` — exact 12-var `ConditionSpec`, domain types.
